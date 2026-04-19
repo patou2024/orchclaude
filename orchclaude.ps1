@@ -23,7 +23,8 @@ param(
     [string]$token = "ORCHESTRATION_COMPLETE", # custom completion token
     [int]$cooldown = 5,       # -cooldown <s>  : seconds between iterations (default 5, 0=off)
     [int]$breaker = 10,       # -breaker <n>   : circuit breaker after N stalled iterations (default 10, 0=off)
-    [switch]$dryrun            # -dryrun        : print the prompt that would be sent and exit (no Claude call, no files)
+    [switch]$dryrun,           # -dryrun        : print the prompt that would be sent and exit (no Claude call, no files)
+    [switch]$noplan            # -noplan        : skip pre-planning phase
 )
 
 # ---- Help ----
@@ -38,7 +39,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan"
     }
     exit 0
 }
@@ -162,6 +163,7 @@ if (-not (Test-Path $workDir)) { Write-Error "Directory not found: $workDir"; ex
 $logFile      = Join-Path $workDir "orchclaude-log.txt"
 $progressFile = Join-Path $workDir "orchclaude-progress.txt"
 $sessionFile  = Join-Path $workDir "orchclaude-session.json"
+$planFile     = Join-Path $workDir "orchclaude-plan.txt"
 
 if ($resumeMode) {
     # Restore progress file from session
@@ -298,6 +300,7 @@ Write-Log "Work dir  : $workDir" "Cyan"
 Write-Log "QA pass   : $(if ($noqa) { 'disabled (-noqa)' } else { 'enabled' })" "Cyan"
 Write-Log "Cooldown  : $(if ($cooldown -eq 0) { 'disabled (-cooldown 0)' } else { "${cooldown}s between iterations" })" "Cyan"
 Write-Log "Breaker   : $(if ($breaker -eq 0) { 'disabled (-breaker 0)' } else { "fires after ${breaker} stalled iterations" })" "Cyan"
+Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (use -noplan to skip)' })" "Cyan"
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
     Write-Log "Resuming  : starting at iteration $startIter" "Cyan"
@@ -305,6 +308,57 @@ if ($resumeMode) {
 
 # ---- Write initial session (status: running) ----
 Write-Session "running" ($startIter - 1)
+
+# ================================================================
+# PLANNING PHASE
+# ================================================================
+if (-not $noplan -and -not $resumeMode) {
+    Write-Banner "PLANNING PHASE" "Blue"
+    Write-Log "Running pre-planning call..." "Blue"
+
+    $planningPrompt = @"
+## PLANNING PHASE
+
+Break the following task into a numbered list of subtasks with dependencies.
+Output ONLY the plan in the exact format below. No code, no files, no preamble, no explanations.
+
+Format (strict):
+PLAN:
+1. [task description] | depends: none
+2. [task description] | depends: 1
+3. [task description] | depends: 1,2
+
+Task:
+$basePrompt
+"@
+
+    $totalInputWords += Get-WordCount $planningPrompt
+    $planOutput = Invoke-Claude $planningPrompt "plan"
+    $totalOutputWords += Get-WordCount $planOutput
+
+    # Extract from PLAN: onwards if Claude added preamble
+    $planContent = $planOutput
+    if ($planOutput -match "(?s)(PLAN:.*)")  {
+        $planContent = $Matches[1].Trim()
+    }
+
+    $planContent | Set-Content $planFile -Encoding UTF8
+    Add-Content $logFile "--- Planning phase ---"
+    Add-Content $logFile $planContent
+    Add-Content $logFile ""
+
+    Write-Host ""
+    Write-Host "PROJECT PLAN:" -ForegroundColor Blue
+    Write-Host ("-" * 55) -ForegroundColor Blue
+    ($planContent -split "`n") | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
+    Write-Host ("-" * 55) -ForegroundColor Blue
+    Write-Host ""
+    Write-Log "Plan saved to: $planFile" "Blue"
+} elseif ($resumeMode -and (Test-Path $planFile)) {
+    Write-Log "Planning  : using saved plan from previous session ($planFile)" "Blue"
+} elseif ($noplan) {
+    Write-Log "Planning phase skipped (-noplan)." "DarkGray"
+}
 
 # ================================================================
 # PHASE 1 - BUILD
@@ -332,9 +386,12 @@ for ($iter = $startIter; $iter -le $i; $iter++) {
         @(Get-Content $progressFile | Where-Object { $_ -match "\S" }).Count
     } else { 0 }
 
+    $savedPlan = if (Test-Path $planFile) { (Get-Content $planFile -Raw).Trim() } else { "" }
+    $planSection = if ($savedPlan) { "## PROJECT PLAN (follow this order):`n$savedPlan`n`n" } else { "" }
+
     $fullPrompt = if ($priorProgress) {
 @"
-$basePrompt
+${planSection}$basePrompt
 $orchestrationInstructions
 
 ## PRIOR PROGRESS (completed in earlier iterations - do not redo):
@@ -343,7 +400,7 @@ $priorProgress
 Continue from where you left off. Output $token when everything is done.
 "@
     } else {
-        $basePrompt + "`n" + $orchestrationInstructions
+        "${planSection}${basePrompt}`n${orchestrationInstructions}"
     }
 
     Write-Log "Calling Claude (build)..." "Yellow"

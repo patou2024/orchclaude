@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 1 — Foundation Hardening
-**Next item to implement:** 2.1 — Pre-Planning Phase
+**Next item to implement:** 2.2 — Context Window Guard
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -48,7 +48,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 2 Checklist
 
-- [ ] 2.1 — Pre-Planning Phase
+- [x] 2.1 — Pre-Planning Phase
 - [ ] 2.2 — Context Window Guard
 - [ ] 2.3 — Named Profiles
 
@@ -98,13 +98,15 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Implemented 1.5: `--dry-run` flag.
-- Added `-dryrun` switch parameter to param block.
-- When set, builds the first-iteration prompt (basePrompt + orchestrationInstructions) and prints it to terminal with clear label.
-- Skips progress file creation, session file creation, and all Claude calls.
-- Exits cleanly with code 0 after printing.
-- Works with both inline prompts (`-Prompt`) and file prompts (`-f`).
-- Phase 1 is now fully complete.
+- Implemented 2.1: Pre-Planning Phase.
+- Added `-noplan` switch parameter to param block (planning is ON by default).
+- Planning phase runs one Claude call before the build loop, asking for a numbered subtask list in PLAN: format.
+- Plan is saved to `orchclaude-plan.txt` in the work directory.
+- Plan is printed to terminal (blue) before build starts.
+- Each build iteration injects the plan at the top of its prompt: `## PROJECT PLAN (follow this order):`.
+- Resume mode detects existing plan file and reuses it without re-running the planning call.
+- `-noplan` skips planning entirely (banner still shows the setting).
+- Plan output is logged to `orchclaude-log.txt` under `--- Planning phase ---`.
 
 ---
 
