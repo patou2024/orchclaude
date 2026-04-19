@@ -2,6 +2,8 @@
 # Usage: orchclaude run "prompt" -t30m
 #        orchclaude run -f project.md -t2h
 #        orchclaude run "prompt" -t1h -i 60 -v -d "C:\Projects\MyApp"
+#        orchclaude resume          (continue an interrupted run)
+#        orchclaude status          (show current session state)
 
 param(
     [Parameter(Position=0)]
@@ -18,7 +20,9 @@ param(
     [switch]$v,               # -v             : verbose - show full Claude output
     [string]$d = "",          # -d <path>      : working directory (default: current)
     [switch]$noqa,            # -noqa          : skip QA pass
-    [string]$token = "ORCHESTRATION_COMPLETE"  # custom completion token
+    [string]$token = "ORCHESTRATION_COMPLETE", # custom completion token
+    [int]$cooldown = 5,       # -cooldown <s>  : seconds between iterations (default 5, 0=off)
+    [int]$breaker = 10        # -breaker <n>   : circuit breaker after N stalled iterations (default 10, 0=off)
 )
 
 # ---- Help ----
@@ -31,13 +35,88 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "Quick reference:" -ForegroundColor Cyan
         Write-Host "  orchclaude run `"prompt`" -t 30m"
         Write-Host "  orchclaude run -f project.md -t 2h"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token"
+        Write-Host "  orchclaude resume              (continue interrupted run)"
+        Write-Host "  orchclaude status              (show session state)"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker"
     }
     exit 0
 }
 
-if ($Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run ... or orchclaude help"
+# ---- Status command ----
+if ($Command -eq "status") {
+    $workDir    = if ($d) { $d } else { (Get-Location).Path }
+    $sessionFile = Join-Path $workDir "orchclaude-session.json"
+
+    if (-not (Test-Path $sessionFile)) {
+        Write-Host "No session file found in $workDir" -ForegroundColor Yellow
+        exit 0
+    }
+
+    $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+
+    $elapsed = [math]::Round(((Get-Date) - [datetime]$session.startTime).TotalMinutes, 1)
+    $lastProgress = if ($session.progressLines.Count -gt 0) { $session.progressLines[-1] } else { "(none)" }
+    $statusColor  = switch ($session.status) {
+        "running"  { "Yellow" }
+        "complete" { "Green"  }
+        "timeout"  { "Red"    }
+        default    { "White"  }
+    }
+
+    Write-Host ""
+    Write-Host "orchclaude session status" -ForegroundColor Cyan
+    Write-Host ("-" * 40)
+    Write-Host ("Status        : " + $session.status)   -ForegroundColor $statusColor
+    Write-Host "Started       : $($session.startTime)"
+    Write-Host "Last updated  : $($session.lastUpdated)"
+    Write-Host "Iteration     : $($session.currentIteration) / $($session.flags.i)"
+    Write-Host "Elapsed total : ${elapsed}m"
+    Write-Host "Last progress : $lastProgress"
+    Write-Host ""
+    exit 0
+}
+
+# ---- Resume command ----
+$resumeMode = $false
+$startIter  = 1
+$savedProgressLines = @()
+
+if ($Command -eq "resume") {
+    $workDir     = if ($d) { $d } else { (Get-Location).Path }
+    $sessionFile  = Join-Path $workDir "orchclaude-session.json"
+
+    if (-not (Test-Path $sessionFile)) {
+        Write-Host "No interrupted session found in $workDir" -ForegroundColor Yellow
+        exit 0
+    }
+
+    $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+
+    if ($session.status -eq "complete") {
+        Write-Host "Last session already completed." -ForegroundColor Green
+        exit 0
+    }
+
+    Write-Host "Interrupted session found (status: $($session.status)). Resuming from iteration $($session.currentIteration + 1)..." -ForegroundColor Cyan
+
+    # Restore all flags from saved session
+    $basePrompt  = $session.prompt
+    $t           = $session.flags.t
+    $i           = $session.flags.i
+    $noqa        = [bool]$session.flags.noqa
+    $token       = $session.flags.token
+    $v           = [bool]$session.flags.v
+    $cooldown    = [int]$session.flags.cooldown
+    $breaker     = [int]$session.flags.breaker
+    $startIter   = $session.currentIteration + 1
+    $savedProgressLines = $session.progressLines
+
+    $resumeMode = $true
+}
+
+# ---- Require "run" for non-resume/resume/status/help ----
+if (-not $resumeMode -and $Command -ne "run") {
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude help"
     exit 1
 }
 
@@ -53,17 +132,19 @@ if ($t -match "^(\d+)(m|h)$") {
     exit 1
 }
 
-# ---- Load prompt ----
-$basePrompt = ""
-if ($f) {
-    if (-not (Test-Path $f)) { Write-Error "File not found: $f"; exit 1 }
-    $basePrompt = (Get-Content $f -Raw).Trim()
-    if (-not $basePrompt) { Write-Error "File '$f' is empty. Provide a prompt file with content."; exit 1 }
-} elseif ($Prompt) {
-    $basePrompt = $Prompt
-} else {
-    Write-Error "Provide a prompt: orchclaude run `"your prompt`" or use -f file.md"
-    exit 1
+# ---- Load prompt (only for fresh run) ----
+if (-not $resumeMode) {
+    $basePrompt = ""
+    if ($f) {
+        if (-not (Test-Path $f)) { Write-Error "File not found: $f"; exit 1 }
+        $basePrompt = (Get-Content $f -Raw).Trim()
+        if (-not $basePrompt) { Write-Error "File '$f' is empty. Provide a prompt file with content."; exit 1 }
+    } elseif ($Prompt) {
+        $basePrompt = $Prompt
+    } else {
+        Write-Error "Provide a prompt: orchclaude run `"your prompt`" or use -f file.md"
+        exit 1
+    }
 }
 
 # ---- Validate max iterations ----
@@ -79,14 +160,53 @@ if (-not (Test-Path $workDir)) { Write-Error "Directory not found: $workDir"; ex
 # ---- Setup ----
 $logFile      = Join-Path $workDir "orchclaude-log.txt"
 $progressFile = Join-Path $workDir "orchclaude-progress.txt"
-try {
-    "" | Set-Content $progressFile -ErrorAction Stop
-} catch {
-    Write-Error "Cannot write to working directory '$workDir': $_"
-    exit 1
+$sessionFile  = Join-Path $workDir "orchclaude-session.json"
+
+if ($resumeMode) {
+    # Restore progress file from session
+    if ($savedProgressLines.Count -gt 0) {
+        $savedProgressLines | Set-Content $progressFile -Encoding UTF8
+    } else {
+        "" | Set-Content $progressFile
+    }
+} else {
+    try {
+        "" | Set-Content $progressFile -ErrorAction Stop
+    } catch {
+        Write-Error "Cannot write to working directory '$workDir': $_"
+        exit 1
+    }
 }
-$startTime = Get-Date
+
+$startTime      = Get-Date
 $timeoutDisplay = $t
+
+# ---- Session file helpers ----
+function Write-Session($status, $currentIteration) {
+    $progressLines = if (Test-Path $progressFile) {
+        @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+    } else { @() }
+
+    $sessionData = [ordered]@{
+        startTime        = $startTime.ToString("o")
+        lastUpdated      = (Get-Date).ToString("o")
+        status           = $status
+        currentIteration = $currentIteration
+        prompt           = $basePrompt
+        flags            = [ordered]@{
+            t        = $t
+            i        = $i
+            noqa     = [bool]$noqa
+            token    = $token
+            v        = [bool]$v
+            cooldown = $cooldown
+            breaker  = $breaker
+        }
+        progressLines    = $progressLines
+    }
+
+    $sessionData | ConvertTo-Json -Depth 5 | Set-Content $sessionFile -Encoding UTF8
+}
 
 $orchestrationInstructions = @"
 
@@ -139,12 +259,20 @@ function Invoke-Claude($prompt, $iterLabel) {
 }
 
 # ---- Banner ----
-Write-Banner "orchclaude"
+Write-Banner "orchclaude$(if ($resumeMode) { ' [RESUME]' })"
 Write-Log "Timeout   : $timeoutDisplay  ($timeoutSeconds s)" "Cyan"
 Write-Log "Max iters : $i" "Cyan"
 Write-Log "Work dir  : $workDir" "Cyan"
 Write-Log "QA pass   : $(if ($noqa) { 'disabled (-noqa)' } else { 'enabled' })" "Cyan"
+Write-Log "Cooldown  : $(if ($cooldown -eq 0) { 'disabled (-cooldown 0)' } else { "${cooldown}s between iterations" })" "Cyan"
+Write-Log "Breaker   : $(if ($breaker -eq 0) { 'disabled (-breaker 0)' } else { "fires after ${breaker} stalled iterations" })" "Cyan"
 Write-Log "Log       : $logFile" "Cyan"
+if ($resumeMode) {
+    Write-Log "Resuming  : starting at iteration $startIter" "Cyan"
+}
+
+# ---- Write initial session (status: running) ----
+Write-Session "running" ($startIter - 1)
 
 # ================================================================
 # PHASE 1 - BUILD
@@ -152,12 +280,14 @@ Write-Log "Log       : $logFile" "Cyan"
 Write-Banner "PHASE 1 - BUILD" "Yellow"
 
 $completed = $false
+$failureStreak = 0
 
-for ($iter = 1; $iter -le $i; $iter++) {
+for ($iter = $startIter; $iter -le $i; $iter++) {
 
     $elapsed = ((Get-Date) - $startTime).TotalSeconds
     if ($elapsed -ge $timeoutSeconds) {
         Write-Banner "TIMEOUT in build phase after $([math]::Round($elapsed/60,1)) min" "Red"
+        Write-Session "timeout" $iter
         break
     }
 
@@ -165,6 +295,9 @@ for ($iter = 1; $iter -le $i; $iter++) {
     Write-Banner "Build iteration $iter / $i  -  ${remaining}m left" "Yellow"
 
     $priorProgress = if (Test-Path $progressFile) { (Get-Content $progressFile -Raw).Trim() } else { "" }
+    $progressCountBefore = if (Test-Path $progressFile) {
+        @(Get-Content $progressFile | Where-Object { $_ -match "\S" }).Count
+    } else { 0 }
 
     $fullPrompt = if ($priorProgress) {
 @"
@@ -194,6 +327,20 @@ Continue from where you left off. Output $token when everything is done.
     Add-Content $logFile $output
     Add-Content $logFile ""
 
+    # Track failure streak (resets when new PROGRESS lines appear)
+    $progressCountAfter = if (Test-Path $progressFile) {
+        @(Get-Content $progressFile | Where-Object { $_ -match "\S" }).Count
+    } else { 0 }
+
+    if ($progressCountAfter -gt $progressCountBefore) {
+        $failureStreak = 0
+    } else {
+        $failureStreak++
+    }
+
+    # Update session file after every iteration
+    Write-Session "running" $iter
+
     if ($output -match [regex]::Escape($token)) {
         $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
         Write-Banner "Build complete - $iter iteration(s)  |  $buildTime elapsed" "Green"
@@ -201,12 +348,47 @@ Continue from where you left off. Output $token when everything is done.
         break
     }
 
+    # Circuit breaker
+    if ($breaker -gt 0 -and $failureStreak -ge $breaker) {
+        Write-Banner "CIRCUIT BREAKER: Claude has not made progress in $failureStreak iterations" "Red"
+
+        $allProgress = if (Test-Path $progressFile) {
+            @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+        } else { @() }
+
+        Write-Host "Last known progress:" -ForegroundColor Yellow
+        $last3 = $allProgress | Select-Object -Last 3
+        if ($last3.Count -eq 0) {
+            Write-Host "  (no progress lines logged yet)" -ForegroundColor DarkGray
+        } else {
+            $last3 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+        }
+        Write-Host ""
+
+        $userChoice = Read-Host "Continue? (y/n/new prompt)"
+
+        if ($userChoice -eq "n") {
+            Write-Log "User stopped run at circuit breaker." "Red"
+            Write-Session "timeout" $iter
+            exit 1
+        } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
+            Write-Log "User chose to continue. Resetting failure streak." "Cyan"
+            $failureStreak = 0
+        } else {
+            $basePrompt = $basePrompt + "`n`n## Additional instruction from user:`n" + $userChoice
+            Write-Log "User added prompt: $userChoice" "Cyan"
+            $failureStreak = 0
+        }
+    }
+
     Write-Log "Token not found. Looping..." "Magenta"
-    Start-Sleep -Seconds 2
+    if ($cooldown -gt 0) { Start-Sleep -Seconds $cooldown }
 }
 
 if (-not $completed) {
+    Write-Session "timeout" $i
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
+    Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
 }
 
@@ -220,6 +402,7 @@ if ($noqa) {
 
     $elapsed = ((Get-Date) - $startTime).TotalSeconds
     if ($elapsed -ge $timeoutSeconds) {
+        Write-Session "timeout" $i
         Write-Banner "TIMEOUT before QA phase could run" "Red"
         exit 1
     }
@@ -285,5 +468,6 @@ Your job now is to act as a QA engineer and adversarial tester.
 # ================================================================
 # DONE
 # ================================================================
+Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
 Write-Banner "ALL DONE  |  $totalTime total" "Green"

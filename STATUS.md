@@ -98,15 +98,14 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Implemented 1.2: Crash Recovery (orchclaude resume / orchclaude status).
-- Session file written at run start, updated after every iteration with JSON state.
-- Status field stays "running" on Ctrl+C (no extra signal handling needed).
-- `orchclaude resume` restores prompt, flags, progress lines, and startIter from session.
-- `orchclaude status` prints iteration count, elapsed time, and last PROGRESS line.
-- On timeout or BUILD INCOMPLETE, status is set to "timeout" and a resume hint is printed.
-- On successful completion, status is set to "complete".
-- `-d` flag works on both resume and status to point at a non-current work dir.
-- Switch params ($noqa, $v) serialized as booleans in JSON; deserialized with [bool] cast.
+- Implemented 1.3: Rate Limiting and Circuit Breaker.
+- Added `-cooldown <s>` flag (default 5). Replaces hardcoded 2s sleep. `-cooldown 0` disables.
+- Added `-breaker <n>` flag (default 10). Fires when no new PROGRESS lines for N consecutive iterations.
+- Circuit breaker shows last 3 PROGRESS lines and asks user to continue (y), stop (n), or add a new prompt.
+- New prompt text is appended to basePrompt; streak resets on y or new prompt.
+- `$failureStreak` resets automatically whenever a new PROGRESS line is detected.
+- `cooldown` and `breaker` serialized in session flags; restored correctly on `orchclaude resume`.
+- README.md and ORCHCLAUDE-GUIDE.md updated with new flag docs.
 
 ---
 
