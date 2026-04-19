@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 1 — Foundation Hardening
-**Next item to implement:** 1.4 — Token / Cost Estimator
+**Next item to implement:** 1.5 — `--dry-run` flag
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -41,7 +41,7 @@ It is the first thing any new session should read before touching any code.
 - [x] 1.1 — External Validation Gate (`-test` flag)
 - [x] 1.2 — Crash Recovery (`orchclaude resume`)
 - [x] 1.3 — Rate Limiting and Circuit Breaker
-- [ ] 1.4 — Token / Cost Estimator
+- [x] 1.4 — Token / Cost Estimator
 - [ ] 1.5 — `--dry-run` flag
 
 ---
@@ -98,14 +98,14 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Implemented 1.3: Rate Limiting and Circuit Breaker.
-- Added `-cooldown <s>` flag (default 5). Replaces hardcoded 2s sleep. `-cooldown 0` disables.
-- Added `-breaker <n>` flag (default 10). Fires when no new PROGRESS lines for N consecutive iterations.
-- Circuit breaker shows last 3 PROGRESS lines and asks user to continue (y), stop (n), or add a new prompt.
-- New prompt text is appended to basePrompt; streak resets on y or new prompt.
-- `$failureStreak` resets automatically whenever a new PROGRESS line is detected.
-- `cooldown` and `breaker` serialized in session flags; restored correctly on `orchclaude resume`.
-- README.md and ORCHCLAUDE-GUIDE.md updated with new flag docs.
+- Implemented 1.4: Token / Cost Estimator.
+- Added `Get-WordCount` helper (words × 1.33 ≈ tokens).
+- Added `Show-CostEstimate` function: prints ~input tokens, ~output tokens, ~cost USD (estimate only).
+- Rates: $3/M input tokens, $15/M output tokens (claude-sonnet-4-x published rates).
+- Word counts accumulated in `$totalInputWords` / `$totalOutputWords` after every Invoke-Claude call (build + QA).
+- `Show-CostEstimate` called at all exit points: TIMEOUT in build loop, circuit breaker "n", BUILD INCOMPLETE, TIMEOUT before QA, and ALL DONE.
+- Cost line also written to log file via Write-Log.
+- README.md updated with COST ESTIMATION section.
 
 ---
 

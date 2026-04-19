@@ -58,6 +58,13 @@ If the terminal is closed or power is lost mid-run:
     -breaker <n>    Pause and ask if Claude stalls for N iterations with no new progress.
                     Default: 10. Use 0 to disable.
 
+  COST ESTIMATION
+    After every run (completion, timeout, or circuit breaker) orchclaude prints:
+      Estimated usage: ~N tokens input, ~N tokens output | Estimated cost: ~$X.XXXX (estimate only)
+    Token count is estimated from word count × 1.33. Cost uses Anthropic's published
+    rates: $3/M input tokens, $15/M output tokens. The estimate is also written to the
+    log file. It is always labeled as an estimate, not an exact figure.
+
   CRASH RECOVERY
     resume          Continue an interrupted run (Ctrl+C, power loss, terminal close).
                     Reads orchclaude-session.json in the work dir and picks up from the
@@ -122,6 +129,22 @@ If the terminal is closed or power is lost mid-run:
     5. Summary prints as:  QA_SUMMARY: <N issues found, N fixed>
 
   Use -noqa to skip Phase 2 entirely.
+
+---
+
+## Token and Cost Estimate
+
+  At the end of every run, orchclaude prints an estimated token count and cost:
+
+    Estimated usage: ~4200 tokens input, ~1800 tokens output | Estimated cost: ~$0.0393 (estimate only)
+
+  This uses Anthropic's published rates for claude-sonnet-4-x:
+    Input:  $3.00 per 1M tokens
+    Output: $15.00 per 1M tokens
+
+  Token count is approximated as words x 1.33 — it is a rough guide, not a billing figure.
+  The estimate prints whether the run completes, times out, or hits the circuit breaker.
+  It is also written to orchclaude-log.txt.
 
 ---
 

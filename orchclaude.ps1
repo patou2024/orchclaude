@@ -181,6 +181,9 @@ if ($resumeMode) {
 $startTime      = Get-Date
 $timeoutDisplay = $t
 
+$totalInputWords  = 0
+$totalOutputWords = 0
+
 # ---- Session file helpers ----
 function Write-Session($status, $currentIteration) {
     $progressLines = if (Test-Path $progressFile) {
@@ -238,6 +241,21 @@ function Write-Banner($text, $color="Cyan") {
     Write-Host ""
 }
 
+function Get-WordCount($text) {
+    if (-not $text) { return 0 }
+    return ($text -split '\s+' | Where-Object { $_ -ne '' }).Count
+}
+
+function Show-CostEstimate {
+    $inputTokens  = [math]::Round($totalInputWords  * 1.33)
+    $outputTokens = [math]::Round($totalOutputWords * 1.33)
+    $inputCost    = [math]::Round($inputTokens  / 1000000 * 3,  4)
+    $outputCost   = [math]::Round($outputTokens / 1000000 * 15, 4)
+    $totalCost    = [math]::Round($inputCost + $outputCost, 4)
+    $line = "Estimated usage: ~$inputTokens tokens input, ~$outputTokens tokens output | Estimated cost: ~`$$totalCost (estimate only)"
+    Write-Log $line "Cyan"
+}
+
 function Invoke-Claude($prompt, $iterLabel) {
     $promptFile = Join-Path $env:TEMP "orchclaude_prompt_${PID}_$iterLabel.txt"
     $prompt | Set-Content $promptFile -Encoding UTF8
@@ -288,6 +306,7 @@ for ($iter = $startIter; $iter -le $i; $iter++) {
     if ($elapsed -ge $timeoutSeconds) {
         Write-Banner "TIMEOUT in build phase after $([math]::Round($elapsed/60,1)) min" "Red"
         Write-Session "timeout" $iter
+        Show-CostEstimate
         break
     }
 
@@ -314,7 +333,9 @@ Continue from where you left off. Output $token when everything is done.
     }
 
     Write-Log "Calling Claude (build)..." "Yellow"
+    $totalInputWords += Get-WordCount $fullPrompt
     $output = Invoke-Claude $fullPrompt "build_$iter"
+    $totalOutputWords += Get-WordCount $output
 
     if ($v) { Write-Host $output }
 
@@ -370,6 +391,7 @@ Continue from where you left off. Output $token when everything is done.
         if ($userChoice -eq "n") {
             Write-Log "User stopped run at circuit breaker." "Red"
             Write-Session "timeout" $iter
+            Show-CostEstimate
             exit 1
         } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
             Write-Log "User chose to continue. Resetting failure streak." "Cyan"
@@ -388,6 +410,7 @@ Continue from where you left off. Output $token when everything is done.
 if (-not $completed) {
     Write-Session "timeout" $i
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
+    Show-CostEstimate
     Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
 }
@@ -404,6 +427,7 @@ if ($noqa) {
     if ($elapsed -ge $timeoutSeconds) {
         Write-Session "timeout" $i
         Write-Banner "TIMEOUT before QA phase could run" "Red"
+        Show-CostEstimate
         exit 1
     }
 
@@ -442,7 +466,9 @@ Your job now is to act as a QA engineer and adversarial tester.
   $qaToken
 "@
 
+    $totalInputWords += Get-WordCount $qaPrompt
     $output = Invoke-Claude $qaPrompt "qa"
+    $totalOutputWords += Get-WordCount $output
 
     if ($v) { Write-Host $output }
 
@@ -470,4 +496,5 @@ Your job now is to act as a QA engineer and adversarial tester.
 # ================================================================
 Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
+Show-CostEstimate
 Write-Banner "ALL DONE  |  $totalTime total" "Green"
