@@ -55,6 +55,18 @@ get_word_count() {
     echo "${1:-}" | wc -w | tr -d '[:space:]'
 }
 
+get_estimated_cost() {
+    python3 - <<PYEOF
+iw = $TOTAL_INPUT_WORDS
+ow = $TOTAL_OUTPUT_WORDS
+it = round(iw * 1.33)
+ot = round(ow * 1.33)
+ic = round(it / 1_000_000 * 3,  4)
+oc = round(ot / 1_000_000 * 15, 4)
+print(round(ic + oc, 4))
+PYEOF
+}
+
 show_cost_estimate() {
     python3 - <<PYEOF
 iw = $TOTAL_INPUT_WORDS
@@ -66,6 +78,29 @@ oc = round(ot / 1_000_000 * 15, 4)
 tc = round(ic + oc, 4)
 print(f"Estimated usage: ~{it} tokens input, ~{ot} tokens output | Estimated cost: ~\${tc} (estimate only)")
 PYEOF
+}
+
+check_budget() {
+    local current_iter="${1:-0}"
+    [[ "$BUDGET" == "0" || -z "$BUDGET" ]] && return
+    local current_cost over
+    current_cost=$(get_estimated_cost)
+    over=$(python3 -c "print('yes' if $current_cost > $BUDGET else 'no')" 2>/dev/null || echo "no")
+    if [[ "$over" == "yes" ]]; then
+        printf "\n"
+        write_log "BUDGET EXCEEDED: estimated cost \$$current_cost exceeds budget \$$BUDGET" "$RED"
+        read -r -p "Continue? (y/n): " budget_choice
+        if [[ "${budget_choice,,}" == "n" ]]; then
+            write_log "User stopped run at budget limit (\$$current_cost > \$$BUDGET)." "$RED"
+            show_cost_estimate
+            write_session "timeout" "$current_iter"
+            show_worktree_branch_info
+            exit 1
+        else
+            BUDGET=$(python3 -c "print(round($BUDGET * 2, 4))" 2>/dev/null || echo "$(( ${BUDGET%.*} * 2 ))")
+            write_log "Budget doubled to \$$BUDGET. Continuing." "$YELLOW"
+        fi
+    fi
 }
 
 invoke_claude() {
@@ -234,6 +269,7 @@ NOBRANCH=false
 PROFILE_NAME=""
 AGENTS=1
 MODEL_OVERRIDE=""
+BUDGET=0
 SUBARG=""
 SHOW_HELP=false
 
@@ -254,6 +290,7 @@ while [[ $# -gt 0 ]]; do
         -profile)  PROFILE_NAME="${2:-}"; shift 2 ;;
         -agents)   AGENTS="${2:-}";           shift 2 ;;
         -model)    MODEL_OVERRIDE="${2:-}";   shift 2 ;;
+        -budget)   BUDGET="${2:-}";           shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -283,7 +320,7 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model\n"
+        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
         printf "          orchclaude profile delete <name>\n"
@@ -698,6 +735,7 @@ else
 fi
 write_log "Agents    : $( [[ "$AGENTS" -gt 1 ]] && echo "$AGENTS parallel agents (independent tasks split from plan)" || echo '1 (sequential, default)' )" "$CYAN"
 write_log "Model     : $( [[ -n "$MODEL_OVERRIDE" ]] && echo "fixed override: $MODEL_OVERRIDE" || echo 'auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)' )" "$CYAN"
+write_log "Budget    : $( [[ "$BUDGET" != "0" && -n "$BUDGET" ]] && echo "\$$BUDGET limit — pause and confirm if cost exceeds threshold" || echo 'disabled (use -budget <amount> to set a limit)' )" "$CYAN"
 [[ -n "$PROFILE_NAME" ]] && write_log "Profile   : $PROFILE_NAME (loaded from $PROFILES_FILE)" "$CYAN"
 write_log "Log       : $LOG_FILE" "$CYAN"
 [[ "$RESUME_MODE" == "true" ]] && write_log "Resuming  : starting at iteration $START_ITER" "$CYAN"
@@ -967,6 +1005,9 @@ $DEPENDENT_SECTION
 
     # QA in parallel mode
     if [[ "$NOQA" != "true" ]]; then
+        # 7.3: Budget check before QA phase
+        check_budget "$I"
+
         write_banner "PHASE 2 - QA + EDGE CASE EVALUATION" "$MAGENTA"
         elapsed=$((SECONDS - SCRIPT_START))
         if [[ "$elapsed" -ge "$TIMEOUT_SECONDS" ]]; then
@@ -1274,6 +1315,9 @@ ${user_choice}"
         esac
     fi
 
+    # 7.3: Budget check before next iteration
+    check_budget "$iter"
+
     write_log "Token not found. Looping..." "$MAGENTA"
     [[ "$COOLDOWN" -gt 0 ]] && sleep "$COOLDOWN"
 done
@@ -1293,6 +1337,9 @@ fi
 if [[ "$NOQA" == "true" ]]; then
     write_banner "QA skipped (-noqa flag)" "$DGRAY"
 else
+    # 7.3: Budget check before QA phase
+    check_budget "$I"
+
     write_banner "PHASE 2 - QA + EDGE CASE EVALUATION" "$MAGENTA"
 
     elapsed=$((SECONDS - SCRIPT_START))

@@ -9,8 +9,8 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 7.3 — Cost-Aware Budget Mode
-**Last session date:** 2026-04-19 (7.2)
+**Next item to implement:** 7.4 — Model Profile Presets
+**Last session date:** 2026-04-19 (7.3)
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -85,7 +85,7 @@ It is the first thing any new session should read before touching any code.
 
 - [ ] 7.1 — Task Classifier (route iterations to haiku / sonnet / opus automatically)
 - [x] 7.2 — Adaptive Escalation (escalate model when no progress detected)
-- [ ] 7.3 — Cost-Aware Budget Mode (`-budget` flag)
+- [x] 7.3 — Cost-Aware Budget Mode (`-budget` flag)
 - [ ] 7.4 — Model Profile Presets (`-modelprofile fast/balanced/quality/auto`)
 
 ---
@@ -95,6 +95,21 @@ It is the first thing any new session should read before touching any code.
 - None currently logged.
 
 ---
+
+## Notes from Last Session (7.3)
+
+- Implemented 7.3: Cost-Aware Budget Mode.
+- Added `-budget <amount>` flag (e.g. `-budget 0.50`); default 0 = disabled. Applied to both `orchclaude.ps1` and `orchclaude.sh`.
+- Added `Get-EstimatedCost` / `get_estimated_cost` helper that returns the running total cost as a number (extracted from the existing cost estimator logic).
+- Added `Check-Budget` / `check_budget` function:
+  - No-op when `-budget` is 0 or omitted.
+  - Computes current estimated cost; if it exceeds the budget threshold, prints a `BUDGET EXCEEDED` warning in Red.
+  - Prompts `Continue? (y/n)`.
+  - If n: logs the stop reason, writes session as `timeout`, shows cost estimate, cleans up worktree info, exits with code 1.
+  - If y: doubles the budget threshold and logs the new value in Yellow.
+- `Check-Budget` is called in two places per run: (a) at the end of each build loop iteration that will loop again (before "Token not found. Looping..."), and (b) before the QA phase starts (both in sequential and parallel-agents mode).
+- Banner now shows: `Budget: $<amount> limit — pause and confirm if cost exceeds threshold` (or `disabled` when not set).
+- Help text updated to include `-budget` in the flags list.
 
 ## Notes from Last Session (7.2)
 

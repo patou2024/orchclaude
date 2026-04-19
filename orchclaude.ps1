@@ -30,7 +30,8 @@ param(
     [int]$agents = 1,          # -agents <n>    : run N parallel Claude agents on independent subtasks (default: 1)
     [Parameter(Position=2)]
     [string]$SubArg = "",      # for: orchclaude profile save <name>
-    [string]$model = ""        # -model <tier>: light, standard, heavy, or raw model ID (default: auto-classify)
+    [string]$model = "",        # -model <tier>: light, standard, heavy, or raw model ID (default: auto-classify)
+    [double]$budget = 0         # -budget <amount>: pause and confirm if estimated cost exceeds this (0 = disabled)
 )
 
 # ---- Help ----
@@ -46,7 +47,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
         Write-Host "  Commands: run, resume, status, dashboard, log, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -617,14 +618,40 @@ function Get-WordCount($text) {
     return ($text -split '\s+' | Where-Object { $_ -ne '' }).Count
 }
 
-function Show-CostEstimate {
+function Get-EstimatedCost {
     $inputTokens  = [math]::Round($totalInputWords  * 1.33)
     $outputTokens = [math]::Round($totalOutputWords * 1.33)
     $inputCost    = [math]::Round($inputTokens  / 1000000 * 3,  4)
     $outputCost   = [math]::Round($outputTokens / 1000000 * 15, 4)
-    $totalCost    = [math]::Round($inputCost + $outputCost, 4)
+    return [math]::Round($inputCost + $outputCost, 4)
+}
+
+function Show-CostEstimate {
+    $inputTokens  = [math]::Round($totalInputWords  * 1.33)
+    $outputTokens = [math]::Round($totalOutputWords * 1.33)
+    $totalCost    = Get-EstimatedCost
     $line = "Estimated usage: ~$inputTokens tokens input, ~$outputTokens tokens output | Estimated cost: ~`$$totalCost (estimate only)"
     Write-Log $line "Cyan"
+}
+
+function Check-Budget($currentIter = 0) {
+    if ($script:budget -le 0) { return }
+    $currentCost = Get-EstimatedCost
+    if ($currentCost -gt $script:budget) {
+        Write-Host ""
+        Write-Log "BUDGET EXCEEDED: estimated cost `$$currentCost exceeds budget `$$($script:budget)" "Red"
+        $choice = Read-Host "Continue? (y/n)"
+        if ($choice -ieq "n") {
+            Write-Log "User stopped run at budget limit (`$$currentCost > `$$($script:budget))." "Red"
+            Show-CostEstimate
+            Write-Session "timeout" $currentIter
+            Show-WorktreeBranchInfo
+            exit 1
+        } else {
+            $script:budget = [math]::Round($script:budget * 2, 4)
+            Write-Log "Budget doubled to `$$($script:budget). Continuing." "Yellow"
+        }
+    }
 }
 
 function Show-WorktreeBranchInfo {
@@ -716,6 +743,7 @@ Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150
 Write-Log "Worktree  : $(if ($nobranch) { 'disabled (-nobranch)' } elseif ($useWorktree) { "branch $worktreeBranch" } elseif ($isGitRepo) { 'git repo detected but worktree creation failed — writing directly' } else { 'not a git repo — writing directly' })" "Cyan"
 Write-Log "Agents    : $(if ($agents -gt 1) { "$agents parallel agents (independent tasks split from plan)" } else { '1 (sequential, default)' })" "Cyan"
 Write-Log "Model     : $(if ($model) { "fixed override: $model" } else { 'auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)' })" "Cyan"
+Write-Log "Budget    : $(if ($budget -gt 0) { "`$$budget limit — pause and confirm if cost exceeds threshold" } else { 'disabled (use -budget <amount> to set a limit)' })" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -986,6 +1014,9 @@ $dependentSection
 
         # Skip the regular build loop by jumping to QA
         if (-not $noqa) {
+            # 7.3: Budget check before QA phase
+            Check-Budget $i
+
             Write-Banner "PHASE 2 - QA + EDGE CASE EVALUATION" "Magenta"
             $elapsed = ((Get-Date) - $startTime).TotalSeconds
             if ($elapsed -ge $timeoutSeconds) {
@@ -1291,6 +1322,9 @@ Continue from where you left off. Output $token when everything is done.
         }
     }
 
+    # 7.3: Budget check before next iteration
+    Check-Budget $iter
+
     Write-Log "Token not found. Looping..." "Magenta"
     if ($cooldown -gt 0) { Start-Sleep -Seconds $cooldown }
 }
@@ -1310,6 +1344,9 @@ if (-not $completed) {
 if ($noqa) {
     Write-Banner "QA skipped (-noqa flag)" "DarkGray"
 } else {
+    # 7.3: Budget check before QA phase
+    Check-Budget $i
+
     Write-Banner "PHASE 2 - QA + EDGE CASE EVALUATION" "Magenta"
 
     $elapsed = ((Get-Date) - $startTime).TotalSeconds
