@@ -469,6 +469,70 @@ PYEOF
 fi
 
 # ------------------------------------------------------------------ #
+# Explain command
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "explain" ]]; then
+    WORK_DIR="${D:-$(pwd)}"
+    SESSION_FILE="$WORK_DIR/orchclaude-session.json"
+
+    printf "\n${CYAN}%s${NC}\n" "======================================================="
+    printf "${CYAN}  orchclaude explain${NC}\n"
+    printf "${CYAN}%s${NC}\n" "======================================================="
+    printf "  Directory : %s\n" "$WORK_DIR"
+    printf "  Mode      : read-only (no file changes)\n"
+    printf "${CYAN}%s${NC}\n\n" "======================================================="
+
+    SESSION_CONTEXT=""
+    if [[ -f "$SESSION_FILE" ]]; then
+        SESSION_CONTEXT=$(python3 - <<PYEOF 2>/dev/null
+import json
+try:
+    d = json.load(open("$SESSION_FILE"))
+    status = d.get("status","unknown")
+    iters  = d.get("currentIteration", 0)
+    lines  = d.get("progressLines", [])
+    ctx = f"\n\n## Context from last orchclaude run\nStatus: {status}  |  Iterations: {iters}"
+    if lines:
+        ctx += "\nProgress logged:\n" + "\n".join(lines)
+    print(ctx)
+except:
+    pass
+PYEOF
+)
+    fi
+
+    EXPLAIN_PROMPT="## EXPLAIN MODE — read-only, no file changes
+
+Your job is to explain what has been built in this directory: $WORK_DIR
+
+Instructions:
+1. Use Read, Glob, and Grep to explore the directory.
+2. Write a clear, structured explanation covering:
+   - What was built and what it does
+   - How it is structured (key files and their roles)
+   - How to use it (main entry points, commands, flags, or APIs)
+   - Anything notable about the implementation
+3. Keep it concise but complete. Write for a developer who is new to this project.
+4. Do NOT create, edit, or delete any files.
+$SESSION_CONTEXT"
+
+    PROMPT_FILE=$(mktemp /tmp/orchclaude_explain_$$.txt)
+    printf '%s' "$EXPLAIN_PROMPT" > "$PROMPT_FILE"
+
+    printf "${CYAN}Calling Claude (read-only)...${NC}\n"
+
+    OUTPUT=$(claude -p "$(cat "$PROMPT_FILE")" --allowedTools "Read,Glob,Grep" --max-turns 20 2>&1)
+    rm -f "$PROMPT_FILE"
+
+    printf "\n${GREEN}%s${NC}\n" "======================================================="
+    printf "${GREEN}  EXPLANATION${NC}\n"
+    printf "${GREEN}%s${NC}\n\n" "======================================================="
+    printf '%s\n' "$OUTPUT"
+    printf "\n"
+    exit 0
+fi
+
+# ------------------------------------------------------------------ #
 # Resume command
 # ------------------------------------------------------------------ #
 RESUME_MODE=false
@@ -575,7 +639,7 @@ fi
 # Validate command
 # ------------------------------------------------------------------ #
 if [[ "$RESUME_MODE" != "true" && "$COMMAND" != "run" ]]; then
-    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, help, profile${NC}\n" "$COMMAND" >&2
+    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, help, profile${NC}\n" "$COMMAND" >&2
     exit 1
 fi
 

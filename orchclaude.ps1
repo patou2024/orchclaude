@@ -62,7 +62,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, help, profile"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -376,6 +376,77 @@ if ($Command -eq "log") {
     exit 0
 }
 
+# ---- Explain command ----
+if ($Command -eq "explain") {
+    $workDir     = if ($d) { $d } else { (Get-Location).Path }
+    $sessionFile = Join-Path $workDir "orchclaude-session.json"
+
+    Write-Host ""
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host "  orchclaude explain" -ForegroundColor Cyan
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host "  Directory : $workDir" -ForegroundColor DarkGray
+    Write-Host "  Mode      : read-only (no file changes)" -ForegroundColor DarkGray
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host ""
+
+    $sessionContext = ""
+    if (Test-Path $sessionFile) {
+        try {
+            $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+            $sessionContext = "`n`n## Context from last orchclaude run`nStatus: $($session.status)  |  Iterations: $($session.currentIteration)"
+            if ($session.progressLines -and $session.progressLines.Count -gt 0) {
+                $sessionContext += "`nProgress logged:`n" + ($session.progressLines -join "`n")
+            }
+        } catch {}
+    }
+
+    $explainPrompt = @"
+## EXPLAIN MODE — read-only, no file changes
+
+Your job is to explain what has been built in this directory: $workDir
+
+Instructions:
+1. Use Read, Glob, and Grep to explore the directory.
+2. Write a clear, structured explanation covering:
+   - What was built and what it does
+   - How it is structured (key files and their roles)
+   - How to use it (main entry points, commands, flags, or APIs)
+   - Anything notable about the implementation
+3. Keep it concise but complete. Write for a developer who is new to this project.
+4. Do NOT create, edit, or delete any files.
+$sessionContext
+"@
+
+    $promptFile = Join-Path $env:TEMP "orchclaude_explain_${PID}.txt"
+    $explainPrompt | Set-Content $promptFile -Encoding UTF8
+
+    Write-Host "Calling Claude (read-only)..." -ForegroundColor Cyan
+
+    try {
+        $output = & claude `
+            -p (Get-Content $promptFile -Raw) `
+            --allowedTools "Read,Glob,Grep" `
+            --max-turns 20 `
+            2>&1
+    } catch [System.Management.Automation.CommandNotFoundException] {
+        Write-Host "'claude' command not found. Is Claude Code installed and in your PATH?" -ForegroundColor Red
+        Remove-Item $promptFile -ErrorAction SilentlyContinue
+        exit 1
+    }
+
+    Remove-Item $promptFile -ErrorAction SilentlyContinue
+
+    Write-Host ""
+    Write-Host ("=" * 55) -ForegroundColor Green
+    Write-Host "  EXPLANATION" -ForegroundColor Green
+    Write-Host ("=" * 55) -ForegroundColor Green
+    Write-Host ""
+    Write-Host $output
+    Write-Host ""
+    exit 0
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -451,7 +522,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude help, orchclaude profile"
     exit 1
 }
 

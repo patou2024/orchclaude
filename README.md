@@ -75,6 +75,7 @@ If the terminal is closed or power is lost mid-run:
     orchclaude run -f <file>   -t <timeout>  [options]
     orchclaude resume          [-d <path>]
     orchclaude status          [-d <path>]
+    orchclaude explain         [-d <path>]
 
 ---
 
@@ -134,6 +135,15 @@ If the terminal is closed or power is lost mid-run:
     status          Show iteration count, elapsed time, and last progress line for the
                     current session without resuming it.
 
+  EXPLAIN
+    explain         Run Claude in read-only mode to explain what was built in a directory.
+                    Claude uses Read, Glob, and Grep to explore the project and writes a
+                    structured explanation covering what it does, how it is structured,
+                    and how to use it. No files are created or modified.
+
+      orchclaude explain                    (explain current directory)
+      orchclaude explain -d C:\Projects\App (explain a specific directory)
+
   COMING SOON (Phase 1.3+)
     -test <cmd>     Validation command to run after each completion claim.
 
@@ -171,6 +181,10 @@ If the terminal is closed or power is lost mid-run:
     orchclaude profile list
     orchclaude run -f feature.md -profile myapp
     orchclaude run -f feature.md -profile myapp -t 30m    (overrides profile timeout)
+
+  Explain what was built after a run:
+    orchclaude explain
+    orchclaude explain -d "C:\Projects\MyApp"
 
   Require tests to pass before finishing (coming in Phase 1.1):
     orchclaude run "Add the login feature" -t 1h -test "npm test"

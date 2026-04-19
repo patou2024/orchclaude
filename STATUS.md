@@ -9,8 +9,8 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Feature Backlog (see ROADMAP.md) — Phase 7 complete
-**Last session date:** 2026-04-19 (7.1 audit)
+**Next item to implement:** Feature Backlog — `orchclaude diff` (see ROADMAP.md)
+**Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -90,9 +90,32 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
+## Feature Backlog Checklist
+
+- [x] `orchclaude explain` — runs Claude in read-only mode and asks it to explain what it built
+- [ ] `orchclaude diff` — shows a clean diff of everything changed in the last run
+- [ ] Slack / Discord webhook notification when a run completes
+- [ ] Support for .orchclauderc config file in the project root
+- [ ] Template library: common project types (REST API, HTML tool, Python script) as starter prompts
+
+---
+
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (explain command)
+
+- Implemented Feature Backlog item: `orchclaude explain`.
+- New command added to both `orchclaude.ps1` and `orchclaude.sh`.
+- `orchclaude explain [-d <path>]` runs Claude in read-only mode (tools: Read, Glob, Grep — no Edit/Write/Bash).
+- Claude explores the target directory and writes a structured explanation: what was built, how it is structured, how to use it.
+- If `orchclaude-session.json` exists in the work dir, its status and progress lines are injected as context.
+- Output is printed to terminal under a clear EXPLANATION banner.
+- README.md, ORCHCLAUDE-GUIDE.md updated with new syntax entry, EXPLAIN section under Flags, and example.
+- Added Feature Backlog Checklist to STATUS.md.
 
 ---
 
