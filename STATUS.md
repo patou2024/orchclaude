@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 2 — Planning and Intelligence
-**Next item to implement:** 3.1 — Git Worktree Isolation
+**Next item to implement:** 3.2 — Auto-Commit Checkpoints
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -56,7 +56,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 3 Checklist
 
-- [ ] 3.1 — Git Worktree Isolation
+- [x] 3.1 — Git Worktree Isolation
 - [ ] 3.2 — Auto-Commit Checkpoints
 
 ---
@@ -97,6 +97,21 @@ It is the first thing any new session should read before touching any code.
 ---
 
 ## Notes from Last Session
+
+- Implemented 3.1: Git Worktree Isolation.
+- At run start, checks if workDir is a git repo (`git rev-parse --git-dir`).
+- If yes: creates branch `orchclaude/<timestamp>` and worktree in `%TEMP%\orchclaude-wt-<timestamp>`.
+- All build/QA work happens inside the worktree; `$workDir` is updated to point there.
+- Subdir handling: if `$workDir` was a subdirectory of the repo root, the equivalent subdir in the worktree is used.
+- On success: prompts user "Merge? (y/n)". y → `git merge --no-ff` then cleans up branch; n → removes worktree folder, preserves branch.
+- On failure/timeout: prints branch name and merge command for manual recovery.
+- `-nobranch` flag skips all of this and writes directly (previous behavior).
+- Non-git dirs: skip silently with a DarkGray notice.
+- Banner shows active branch name or why isolation was skipped.
+- `nobranch` added to profile save/load.
+- Phase 3 checklist: 3.1 complete, 3.2 next.
+
+## Notes from Previous Session (2.3)
 
 - Implemented 2.3: Named Profiles.
 - Profiles stored in `%USERPROFILE%\.orchclaude\profiles.json` (human-readable JSON).

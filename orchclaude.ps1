@@ -25,6 +25,7 @@ param(
     [int]$breaker = 10,       # -breaker <n>   : circuit breaker after N stalled iterations (default 10, 0=off)
     [switch]$dryrun,           # -dryrun        : print the prompt that would be sent and exit (no Claude call, no files)
     [switch]$noplan,           # -noplan        : skip pre-planning phase
+    [switch]$nobranch,         # -nobranch      : skip git worktree isolation (write directly to working dir)
     [string]$profile = "",     # -profile <name>: load a saved profile's flags (CLI flags override)
     [Parameter(Position=2)]
     [string]$SubArg = ""       # for: orchclaude profile save <name>
@@ -42,7 +43,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -profile"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -89,6 +90,7 @@ if ($Command -eq "profile") {
             cooldown = $cooldown
             breaker  = $breaker
             noplan   = [bool]$noplan
+            nobranch = [bool]$nobranch
         }
         Save-Profiles $profiles
         Write-Host "Profile '$SubArg' saved to $profilesFile" -ForegroundColor Green
@@ -223,6 +225,7 @@ if ($profile -and -not $resumeMode) {
     if (-not $PSBoundParameters.ContainsKey('cooldown')) { $cooldown = [int]$p.cooldown }
     if (-not $PSBoundParameters.ContainsKey('breaker'))  { $breaker  = [int]$p.breaker }
     if (-not $PSBoundParameters.ContainsKey('noplan'))   { $noplan   = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
+    if (-not $PSBoundParameters.ContainsKey('nobranch')) { $nobranch = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
 }
 
 # ---- Require "run" for non-resume/resume/status/help ----
@@ -267,6 +270,45 @@ if ($i -le 0) {
 # ---- Working directory ----
 $workDir = if ($d) { $d } else { (Get-Location).Path }
 if (-not (Test-Path $workDir)) { Write-Error "Directory not found: $workDir"; exit 1 }
+
+# ---- Git Worktree Isolation ----
+$isGitRepo       = $false
+$useWorktree     = $false
+$worktreePath    = ""
+$worktreeBranch  = ""
+$originalBranch  = ""
+$originalWorkDir = $workDir
+
+if (-not $nobranch -and -not $resumeMode -and -not $dryrun) {
+    $null = & git -C $workDir rev-parse --git-dir 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $isGitRepo      = $true
+        $gitRoot        = (& git -C $workDir rev-parse --show-toplevel 2>&1).Trim().Replace('/', '\')
+        $originalBranch = (& git -C $workDir branch --show-current 2>&1).Trim()
+        if (-not $originalBranch) { $originalBranch = "HEAD" }
+
+        $ts             = (Get-Date).ToString("yyyyMMdd-HHmmss")
+        $worktreeBranch = "orchclaude/$ts"
+        $wtRoot         = Join-Path $env:TEMP "orchclaude-wt-$ts"
+
+        $wtOut = & git -C $workDir worktree add $wtRoot -b $worktreeBranch 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Could not create git worktree: $wtOut — writing directly to $workDir"
+        } else {
+            $useWorktree  = $true
+            $worktreePath = $wtRoot
+            # Preserve subdir if workDir was not the repo root
+            if ($workDir.TrimEnd('\') -ne $gitRoot.TrimEnd('\')) {
+                $rel     = $workDir.Substring($gitRoot.Length).TrimStart('\')
+                $workDir = Join-Path $wtRoot $rel
+            } else {
+                $workDir = $wtRoot
+            }
+        }
+    } else {
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Not a git repository — writing directly to $workDir (use -nobranch to suppress this message)" -ForegroundColor DarkGray
+    }
+}
 
 # ---- Setup ----
 $logFile      = Join-Path $workDir "orchclaude-log.txt"
@@ -381,6 +423,13 @@ function Show-CostEstimate {
     Write-Log $line "Cyan"
 }
 
+function Show-WorktreeBranchInfo {
+    if (-not $useWorktree) { return }
+    Write-Log "Worktree branch '$worktreeBranch' left intact for inspection." "Yellow"
+    Write-Log "Worktree path  : $worktreePath" "Yellow"
+    Write-Log "To merge later : git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
+}
+
 function Invoke-Claude($prompt, $iterLabel) {
     $promptFile = Join-Path $env:TEMP "orchclaude_prompt_${PID}_$iterLabel.txt"
     $prompt | Set-Content $promptFile -Encoding UTF8
@@ -411,6 +460,7 @@ Write-Log "Cooldown  : $(if ($cooldown -eq 0) { 'disabled (-cooldown 0)' } else 
 Write-Log "Breaker   : $(if ($breaker -eq 0) { 'disabled (-breaker 0)' } else { "fires after ${breaker} stalled iterations" })" "Cyan"
 Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (use -noplan to skip)' })" "Cyan"
 Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150k tokens)" "Cyan"
+Write-Log "Worktree  : $(if ($nobranch) { 'disabled (-nobranch)' } elseif ($useWorktree) { "branch $worktreeBranch" } elseif ($isGitRepo) { 'git repo detected but worktree creation failed — writing directly' } else { 'not a git repo — writing directly' })" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -517,7 +567,7 @@ Continue from where you left off. Output $token when everything is done.
     # ---- Context Window Guard ----
     $estimatedTokens = [math]::Round((Get-WordCount $fullPrompt) * 1.33)
     if ($estimatedTokens -gt 150000 -and $priorProgress) {
-        Write-Log "CONTEXT GUARD: prompt is ~$estimatedTokens tokens — compressing progress log..." "DarkYellow"
+        Write-Log "CONTEXT GUARD: prompt is ~$estimatedTokens tokens - compressing progress log..." "DarkYellow"
 
         $compressionPrompt = "Summarize these progress notes in 10 concise bullet points. Output only the bullet points, no preamble, no explanation:`n`n$priorProgress"
         $totalInputWords += Get-WordCount $compressionPrompt
@@ -547,7 +597,7 @@ Continue from where you left off. Output $token when everything is done.
                 "${planSection}${basePrompt}`n${orchestrationInstructions}"
             }
         } else {
-            Write-Log "CONTEXT GUARD: compression returned empty result — continuing with original." "Red"
+            Write-Log "CONTEXT GUARD: compression returned empty result - continuing with original." "Red"
         }
     }
 
@@ -611,6 +661,7 @@ Continue from where you left off. Output $token when everything is done.
             Write-Log "User stopped run at circuit breaker." "Red"
             Write-Session "timeout" $iter
             Show-CostEstimate
+            Show-WorktreeBranchInfo
             exit 1
         } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
             Write-Log "User chose to continue. Resetting failure streak." "Cyan"
@@ -630,6 +681,7 @@ if (-not $completed) {
     Write-Session "timeout" $i
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
     Show-CostEstimate
+    Show-WorktreeBranchInfo
     Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
 }
@@ -647,6 +699,7 @@ if ($noqa) {
         Write-Session "timeout" $i
         Write-Banner "TIMEOUT before QA phase could run" "Red"
         Show-CostEstimate
+        Show-WorktreeBranchInfo
         exit 1
     }
 
@@ -717,3 +770,24 @@ Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
 Show-CostEstimate
 Write-Banner "ALL DONE  |  $totalTime total" "Green"
+
+if ($useWorktree) {
+    Write-Host ""
+    $mergeChoice = Read-Host "Merge branch '$worktreeBranch' into '$originalBranch'? (y/n)"
+    if ($mergeChoice -ieq "y") {
+        Write-Log "Removing worktree and merging $worktreeBranch into $originalBranch..." "Cyan"
+        & git -C $originalWorkDir worktree remove $worktreePath --force 2>&1 | Out-Null
+        $mergeResult = & git -C $originalWorkDir merge $worktreeBranch --no-ff -m "orchclaude: merge $worktreeBranch" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Merge complete. Branch '$worktreeBranch' merged into '$originalBranch'." "Green"
+            & git -C $originalWorkDir branch -d $worktreeBranch 2>&1 | Out-Null
+        } else {
+            Write-Log "Merge failed: $mergeResult" "Red"
+            Write-Log "Branch '$worktreeBranch' preserved. Merge manually: git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
+        }
+    } else {
+        Write-Log "Merge skipped. Branch '$worktreeBranch' preserved." "Yellow"
+        Write-Log "To merge later: git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
+        & git -C $originalWorkDir worktree remove $worktreePath --force 2>&1 | Out-Null
+    }
+}
