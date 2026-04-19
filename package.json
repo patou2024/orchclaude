@@ -1,0 +1,40 @@
+{
+  "name": "orchclaude",
+  "version": "0.1.0",
+  "description": "Windows/Unix orchestrator for Claude Code — keeps Claude running until the job is done",
+  "bin": {
+    "orchclaude": "bin/orchclaude.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "orchclaude.ps1",
+    "orchclaude.sh",
+    "orchclaude.cmd",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "keywords": [
+    "claude",
+    "ai",
+    "orchestrator",
+    "automation",
+    "cli",
+    "claude-code"
+  ],
+  "author": "patou2024",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/patou2024/orchclaude.git"
+  },
+  "homepage": "https://github.com/patou2024/orchclaude#readme",
+  "bugs": {
+    "url": "https://github.com/patou2024/orchclaude/issues"
+  }
+}

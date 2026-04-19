@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 5.2 — Package Distribution (npm)
+**Next item to implement:** 6.1 — Status Dashboard
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -70,7 +70,7 @@ It is the first thing any new session should read before touching any code.
 ## Phase 5 Checklist
 
 - [x] 5.1 — Linux / macOS Port
-- [ ] 5.2 — Package Distribution (npm)
+- [x] 5.2 — Package Distribution (npm)
 
 ---
 
@@ -96,7 +96,17 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
-## Notes from Last Session (5.1)
+## Notes from Last Session (5.2)
+
+- Implemented 5.2: Package Distribution (npm).
+- Created `package.json`: name `orchclaude`, version 0.1.0, `bin` field points to `bin/orchclaude.js`, `postinstall` runs `scripts/postinstall.js`, `files` includes only the scripts and bin/scripts dirs.
+- Created `bin/orchclaude.js`: Node.js shim (#!/usr/bin/env node). Detects `process.platform`. On Windows: spawns `powershell.exe -ExecutionPolicy Bypass -File orchclaude.ps1`. On Unix: spawns `bash orchclaude.sh`. Passes all args through. Forwards exit code.
+- Created `scripts/postinstall.js`: on non-Windows, runs `chmod +x orchclaude.sh` after install. Non-fatal if it fails.
+- Updated README.md: added "Install via npm (recommended)" section at the top with `npm install -g orchclaude` and upgrade instructions.
+- Users can now install with: `npm install -g orchclaude`
+- Phase 5 is now fully complete. Next: 6.1 Status Dashboard.
+
+## Notes from Previous Session (5.1)
 
 - Implemented 5.1: Linux / macOS Port.
 - Wrote `orchclaude.sh` — a full bash equivalent of `orchclaude.ps1` with 100% feature parity.

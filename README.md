@@ -5,7 +5,23 @@ After the build, automatically runs a QA pass that checks edge cases and fixes i
 
 ---
 
-## One-Time Setup
+## Install via npm (recommended)
+
+Requires Node.js 14+. Detects your OS and wires up the right script automatically.
+
+    npm install -g orchclaude
+
+Then use it immediately:
+
+    orchclaude run "your prompt here" -t 30m
+
+To upgrade later:
+
+    npm install -g orchclaude@latest
+
+---
+
+## One-Time Setup (manual / without npm)
 
 ### Windows (PowerShell)
 
