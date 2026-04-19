@@ -624,6 +624,27 @@ Continue from where you left off. Output $token when everything is done.
 
     if ($progressCountAfter -gt $progressCountBefore) {
         $failureStreak = 0
+
+        # Auto-Commit Checkpoint (3.2): commit after each iteration with new progress
+        if ($useWorktree) {
+            $gitStatus = & git -C $worktreePath status --porcelain 2>&1
+            if ($gitStatus -match '\S') {
+                $allProgressLines = @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+                $lastProgressLine = if ($allProgressLines.Count -gt 0) { $allProgressLines[-1] } else { "iteration $iter" }
+                $commitMsg = "orchclaude checkpoint: $lastProgressLine"
+                & git -C $worktreePath add -A 2>&1 | Out-Null
+                $commitOut = & git -C $worktreePath commit -m $commitMsg 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $commitHash = (& git -C $worktreePath rev-parse --short HEAD 2>&1).Trim()
+                    Write-Log "Checkpoint committed [$commitHash]: $lastProgressLine" "DarkCyan"
+                    Add-Content $logFile "--- Checkpoint commit $commitHash (iter $iter) ---"
+                    Add-Content $logFile $commitOut
+                    Add-Content $logFile ""
+                } else {
+                    Write-Log "Checkpoint commit failed: $commitOut" "DarkYellow"
+                }
+            }
+        }
     } else {
         $failureStreak++
     }

@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 2 — Planning and Intelligence
-**Next item to implement:** 3.2 — Auto-Commit Checkpoints
+**Next item to implement:** 4.1 — Parallel Agents
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -57,7 +57,7 @@ It is the first thing any new session should read before touching any code.
 ## Phase 3 Checklist
 
 - [x] 3.1 — Git Worktree Isolation
-- [ ] 3.2 — Auto-Commit Checkpoints
+- [x] 3.2 — Auto-Commit Checkpoints
 
 ---
 
@@ -97,6 +97,15 @@ It is the first thing any new session should read before touching any code.
 ---
 
 ## Notes from Last Session
+
+- Implemented 3.2: Auto-Commit Checkpoints.
+- After each build iteration where new PROGRESS lines appear, checks `git status --porcelain` in the worktree.
+- If files changed: runs `git add -A` + `git commit -m "orchclaude checkpoint: <last PROGRESS line>"`.
+- Logs the short commit hash with `Write-Log` in DarkCyan; also appends to orchclaude-log.txt.
+- No-op when: no worktree (nobranch/non-git), no new progress lines, or no file changes (prevents empty commits).
+- Phase 3 is now fully complete. Next: 4.1 Parallel Agents.
+
+## Notes from Previous Session (3.1)
 
 - Implemented 3.1: Git Worktree Isolation.
 - At run start, checks if workDir is a git repo (`git rev-parse --git-dir`).
