@@ -69,16 +69,67 @@ PYEOF
 }
 
 invoke_claude() {
-    local prompt="$1" label="$2"
+    local prompt="$1" label="$2" model_id="${3:-}"
     local pfile
     pfile=$(mktemp "/tmp/orchclaude_prompt_$$_${label}.XXXXXX")
     printf '%s' "$prompt" > "$pfile"
+    local model_args=()
+    [[ -n "$model_id" ]] && model_args=(--model "$model_id")
     local out
     out=$(claude -p "$(cat "$pfile")" \
         --allowedTools "Edit,Bash,Read,Write,Glob,Grep" \
-        --max-turns 50 2>&1) || true
+        --max-turns 50 "${model_args[@]}" 2>&1) || true
     rm -f "$pfile"
     printf '%s' "$out"
+}
+
+# ---- Model tier map (7.1) ----
+MODEL_LIGHT="claude-haiku-4-5-20251001"
+MODEL_STANDARD="claude-sonnet-4-6"
+MODEL_HEAVY="claude-opus-4-7"
+
+resolve_model_id() {
+    local tier="$1"
+    if [[ -n "$MODEL_OVERRIDE" ]]; then
+        case "$MODEL_OVERRIDE" in
+            light)    printf '%s' "$MODEL_LIGHT";    return ;;
+            standard) printf '%s' "$MODEL_STANDARD"; return ;;
+            heavy)    printf '%s' "$MODEL_HEAVY";    return ;;
+            *)        printf '%s' "$MODEL_OVERRIDE"; return ;;
+        esac
+    fi
+    case "$tier" in
+        light)    printf '%s' "$MODEL_LIGHT" ;;
+        heavy)    printf '%s' "$MODEL_HEAVY" ;;
+        *)        printf '%s' "$MODEL_STANDARD" ;;
+    esac
+}
+
+tier_label() {
+    local model_id="$1"
+    case "$model_id" in
+        claude-haiku-4-5*) printf "haiku" ;;
+        claude-sonnet-4-6) printf "sonnet" ;;
+        claude-opus-4-7)   printf "opus" ;;
+        *)                 printf "%s" "$model_id" ;;
+    esac
+}
+
+get_task_tier() {
+    local prompt="$1" iter_num="$2" has_prior="$3"
+    # First iteration of brand-new project
+    if [[ "$iter_num" -eq 1 && "$has_prior" == "false" ]]; then
+        printf "heavy"; return
+    fi
+    local excerpt="${prompt:0:600}"
+    local classify_prompt="Classify this software task as LIGHT, STANDARD, or HEAVY. Output only one word.
+LIGHT=reading/planning/summarizing/simple files. STANDARD=general coding. HEAVY=architecture/complex debugging/security.
+Task: $excerpt"
+    local raw
+    raw=$(claude -p "$classify_prompt" --model "$MODEL_LIGHT" --max-turns 1 2>&1) || true
+    if echo "$raw" | grep -qw "HEAVY"; then printf "heavy"; return; fi
+    if echo "$raw" | grep -qw "LIGHT";  then printf "light";  return; fi
+    printf "standard"
 }
 
 show_worktree_branch_info() {
@@ -182,6 +233,7 @@ NOPLAN=false
 NOBRANCH=false
 PROFILE_NAME=""
 AGENTS=1
+MODEL_OVERRIDE=""
 SUBARG=""
 SHOW_HELP=false
 
@@ -200,7 +252,8 @@ while [[ $# -gt 0 ]]; do
         -noplan)   NOPLAN=true;          shift   ;;
         -nobranch) NOBRANCH=true;        shift   ;;
         -profile)  PROFILE_NAME="${2:-}"; shift 2 ;;
-        -agents)   AGENTS="${2:-}";      shift 2 ;;
+        -agents)   AGENTS="${2:-}";           shift 2 ;;
+        -model)    MODEL_OVERRIDE="${2:-}";   shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -230,7 +283,7 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents\n"
+        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
         printf "          orchclaude profile delete <name>\n"
@@ -644,6 +697,7 @@ else
     write_log "Worktree  : not a git repo — writing directly" "$CYAN"
 fi
 write_log "Agents    : $( [[ "$AGENTS" -gt 1 ]] && echo "$AGENTS parallel agents (independent tasks split from plan)" || echo '1 (sequential, default)' )" "$CYAN"
+write_log "Model     : $( [[ -n "$MODEL_OVERRIDE" ]] && echo "fixed override: $MODEL_OVERRIDE" || echo 'auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)' )" "$CYAN"
 [[ -n "$PROFILE_NAME" ]] && write_log "Profile   : $PROFILE_NAME (loaded from $PROFILES_FILE)" "$CYAN"
 write_log "Log       : $LOG_FILE" "$CYAN"
 [[ "$RESUME_MODE" == "true" ]] && write_log "Resuming  : starting at iteration $START_ITER" "$CYAN"
@@ -675,7 +729,8 @@ Task:
 $BASE_PROMPT"
 
     TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$PLANNING_PROMPT")))
-    PLAN_OUTPUT=$(invoke_claude "$PLANNING_PROMPT" "plan")
+    write_log "MODEL: haiku (planning)" "$DCYAN"
+    PLAN_OUTPUT=$(invoke_claude "$PLANNING_PROMPT" "plan" "$(resolve_model_id light)")
     TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$PLAN_OUTPUT")))
 
     PLAN_CONTENT="$PLAN_OUTPUT"
@@ -881,7 +936,8 @@ $DEPENDENT_SECTION
 
     TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$MERGE_PROMPT")))
     write_log "Calling Claude (merge)..." "$CYAN"
-    MERGE_OUTPUT=$(invoke_claude "$MERGE_PROMPT" "merge")
+    write_log "MODEL: sonnet (merge)" "$DCYAN"
+    MERGE_OUTPUT=$(invoke_claude "$MERGE_PROMPT" "merge" "$(resolve_model_id standard)")
     TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$MERGE_OUTPUT")))
 
     [[ "$V" == "true" ]] && printf '%s\n' "$MERGE_OUTPUT"
@@ -954,7 +1010,8 @@ Your job now is to act as a QA engineer and adversarial tester.
   $QA_TOKEN"
 
         TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$QA_PROMPT")))
-        QA_OUT=$(invoke_claude "$QA_PROMPT" "qa_parallel")
+        write_log "MODEL: sonnet (QA)" "$DCYAN"
+        QA_OUT=$(invoke_claude "$QA_PROMPT" "qa_parallel" "$(resolve_model_id standard)")
         TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$QA_OUT")))
 
         [[ "$V" == "true" ]] && printf '%s\n' "$QA_OUT"
@@ -1009,6 +1066,12 @@ write_banner "PHASE 1 - BUILD" "$YELLOW"
 COMPLETED=false
 FAILURE_STREAK=0
 
+# 7.2 — Adaptive Escalation state
+ESCALATION_FLOOR=""
+ESCALATED_TO_STANDARD=false
+ESCALATED_TO_HEAVY=false
+NO_PROGRESS_STREAK=0
+
 for (( iter=START_ITER; iter<=I; iter++ )); do
 
     elapsed=$((SECONDS - SCRIPT_START))
@@ -1059,7 +1122,8 @@ ${ORCHESTRATION_INSTRUCTIONS}"
 
 $PRIOR_PROGRESS"
         TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$COMPRESSION_PROMPT")))
-        COMPRESSED_RAW=$(invoke_claude "$COMPRESSION_PROMPT" "compress_${iter}")
+        write_log "MODEL: haiku (context compression)" "$DCYAN"
+        COMPRESSED_RAW=$(invoke_claude "$COMPRESSION_PROMPT" "compress_${iter}" "$(resolve_model_id light)")
         TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$COMPRESSED_RAW")))
 
         if [[ -n "$COMPRESSED_RAW" ]]; then
@@ -1082,9 +1146,23 @@ Continue from where you left off. Output $TOKEN when everything is done."
         fi
     fi
 
+    has_prior="$( [[ -n "$PRIOR_PROGRESS" ]] && echo true || echo false )"
+    BUILD_TIER="$( [[ -n "$MODEL_OVERRIDE" ]] && echo "$MODEL_OVERRIDE" || get_task_tier "$FULL_PROMPT" "$iter" "$has_prior" )"
+
+    # 7.2: Apply escalation floor
+    if [[ -z "$MODEL_OVERRIDE" ]]; then
+        if   [[ "$ESCALATION_FLOOR" == "heavy"    && "$BUILD_TIER" != "heavy"    ]]; then BUILD_TIER="heavy"
+        elif [[ "$ESCALATION_FLOOR" == "standard" && "$BUILD_TIER" == "light"    ]]; then BUILD_TIER="standard"
+        fi
+    fi
+
+    BUILD_MODEL_ID="$(resolve_model_id "$BUILD_TIER")"
+    BUILD_LABEL="$(tier_label "$BUILD_MODEL_ID")"
+    write_log "MODEL: $BUILD_LABEL (build iter $iter)" "$DCYAN"
+    echo "[$(date +%H:%M:%S)] MODEL: $BUILD_LABEL (build iter $iter)" >> "$LOG_FILE"
     write_log "Calling Claude (build)..." "$YELLOW"
     TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$FULL_PROMPT")))
-    OUTPUT=$(invoke_claude "$FULL_PROMPT" "build_${iter}")
+    OUTPUT=$(invoke_claude "$FULL_PROMPT" "build_${iter}" "$BUILD_MODEL_ID")
     TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$OUTPUT")))
 
     [[ "$V" == "true" ]] && printf '%s\n' "$OUTPUT"
@@ -1104,6 +1182,7 @@ Continue from where you left off. Output $TOKEN when everything is done."
 
     if [[ "$PROGRESS_COUNT_AFTER" -gt "$PROGRESS_COUNT_BEFORE" ]]; then
         FAILURE_STREAK=0
+        NO_PROGRESS_STREAK=0
 
         # Auto-Commit Checkpoint (3.2)
         if [[ "$USE_WORKTREE" == "true" ]]; then
@@ -1123,6 +1202,26 @@ Continue from where you left off. Output $TOKEN when everything is done."
         fi
     else
         FAILURE_STREAK=$((FAILURE_STREAK + 1))
+        NO_PROGRESS_STREAK=$((NO_PROGRESS_STREAK + 1))
+
+        # 7.2: Adaptive Escalation — escalate after 2 consecutive no-progress iterations
+        if [[ -z "$MODEL_OVERRIDE" && "$NO_PROGRESS_STREAK" -ge 2 ]]; then
+            if [[ "$BUILD_TIER" == "light" && "$ESCALATED_TO_STANDARD" == "false" ]]; then
+                ESCALATED_TO_STANDARD=true
+                ESCALATION_FLOOR="standard"
+                NO_PROGRESS_STREAK=0
+                ESC_MSG="ESCALATED: haiku -> sonnet (no progress after 2 iterations)"
+                write_log "$ESC_MSG" "$YELLOW"
+                echo "[$(date +%H:%M:%S)] $ESC_MSG" >> "$LOG_FILE"
+            elif [[ "$BUILD_TIER" == "standard" && "$ESCALATED_TO_HEAVY" == "false" ]]; then
+                ESCALATED_TO_HEAVY=true
+                ESCALATION_FLOOR="heavy"
+                NO_PROGRESS_STREAK=0
+                ESC_MSG="ESCALATED: sonnet -> opus (no progress after 2 iterations)"
+                write_log "$ESC_MSG" "$YELLOW"
+                echo "[$(date +%H:%M:%S)] $ESC_MSG" >> "$LOG_FILE"
+            fi
+        fi
     fi
 
     write_session "running" "$iter"
@@ -1239,7 +1338,8 @@ Your job now is to act as a QA engineer and adversarial tester.
   $QA_TOKEN"
 
     TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$QA_PROMPT")))
-    QA_OUTPUT=$(invoke_claude "$QA_PROMPT" "qa")
+    write_log "MODEL: sonnet (QA)" "$DCYAN"
+    QA_OUTPUT=$(invoke_claude "$QA_PROMPT" "qa" "$(resolve_model_id standard)")
     TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$QA_OUTPUT")))
 
     [[ "$V" == "true" ]] && printf '%s\n' "$QA_OUTPUT"

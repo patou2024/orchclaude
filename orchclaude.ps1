@@ -29,7 +29,8 @@ param(
     [string]$profile = "",     # -profile <name>: load a saved profile's flags (CLI flags override)
     [int]$agents = 1,          # -agents <n>    : run N parallel Claude agents on independent subtasks (default: 1)
     [Parameter(Position=2)]
-    [string]$SubArg = ""       # for: orchclaude profile save <name>
+    [string]$SubArg = "",      # for: orchclaude profile save <name>
+    [string]$model = ""        # -model <tier>: light, standard, heavy, or raw model ID (default: auto-classify)
 )
 
 # ---- Help ----
@@ -45,7 +46,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
         Write-Host "  Commands: run, resume, status, dashboard, log, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -633,16 +634,19 @@ function Show-WorktreeBranchInfo {
     Write-Log "To merge later : git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
 }
 
-function Invoke-Claude($prompt, $iterLabel) {
+function Invoke-Claude($prompt, $iterLabel, $modelId = "") {
     $promptFile = Join-Path $env:TEMP "orchclaude_prompt_${PID}_$iterLabel.txt"
     $prompt | Set-Content $promptFile -Encoding UTF8
 
+    $claudeArgs = @(
+        "-p", (Get-Content $promptFile -Raw),
+        "--allowedTools", "Edit,Bash,Read,Write,Glob,Grep",
+        "--max-turns", "50"
+    )
+    if ($modelId) { $claudeArgs += "--model"; $claudeArgs += $modelId }
+
     try {
-        $output = & claude `
-            -p (Get-Content $promptFile -Raw) `
-            --allowedTools "Edit,Bash,Read,Write,Glob,Grep" `
-            --max-turns 50 `
-            2>&1
+        $output = & claude @claudeArgs 2>&1
     } catch [System.Management.Automation.CommandNotFoundException] {
         Write-Error "'claude' command not found. Is Claude Code installed and in your PATH?"
         Remove-Item $promptFile -ErrorAction SilentlyContinue
@@ -651,6 +655,52 @@ function Invoke-Claude($prompt, $iterLabel) {
 
     Remove-Item $promptFile -ErrorAction SilentlyContinue
     return $output
+}
+
+# ---- Model tier map (7.1) ----
+$script:modelMap = @{
+    "light"    = "claude-haiku-4-5-20251001"
+    "standard" = "claude-sonnet-4-6"
+    "heavy"    = "claude-opus-4-7"
+}
+$script:tierLabel = @{
+    "claude-haiku-4-5-20251001" = "haiku"
+    "claude-sonnet-4-6"         = "sonnet"
+    "claude-opus-4-7"           = "opus"
+}
+
+function Resolve-ModelId($tier) {
+    if ($model) {
+        if ($model -eq "light")    { return $script:modelMap["light"] }
+        if ($model -eq "standard") { return $script:modelMap["standard"] }
+        if ($model -eq "heavy")    { return $script:modelMap["heavy"] }
+        return $model  # raw model ID passed directly
+    }
+    return $script:modelMap[$tier.ToLower()]
+}
+
+function Get-TaskTier($prompt, $iterNum, $hasPriorProgress) {
+    # First iteration of a brand-new project → always heavy
+    if ($iterNum -eq 1 -and -not $hasPriorProgress) { return "heavy" }
+
+    # Run a lightweight haiku classifier
+    $excerpt = $prompt.Substring(0, [math]::Min(600, $prompt.Length))
+    $classifyPrompt = @"
+Classify this software task as LIGHT, STANDARD, or HEAVY. Output only one word.
+
+LIGHT = reading files / summarizing / generating plans or outlines / simple file writes with no logic
+STANDARD = general feature implementation / most coding tasks / moderate reasoning
+HEAVY = architecture decisions / complex multi-file debugging / security-sensitive code
+
+Task:
+$excerpt
+"@
+    try {
+        $raw = (& claude -p $classifyPrompt --model claude-haiku-4-5-20251001 --max-turns 1 2>&1) -join " "
+        if ($raw -match "\bHEAVY\b")    { return "heavy" }
+        if ($raw -match "\bLIGHT\b")    { return "light" }
+    } catch {}
+    return "standard"
 }
 
 # ---- Banner ----
@@ -665,6 +715,7 @@ Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (
 Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150k tokens)" "Cyan"
 Write-Log "Worktree  : $(if ($nobranch) { 'disabled (-nobranch)' } elseif ($useWorktree) { "branch $worktreeBranch" } elseif ($isGitRepo) { 'git repo detected but worktree creation failed — writing directly' } else { 'not a git repo — writing directly' })" "Cyan"
 Write-Log "Agents    : $(if ($agents -gt 1) { "$agents parallel agents (independent tasks split from plan)" } else { '1 (sequential, default)' })" "Cyan"
+Write-Log "Model     : $(if ($model) { "fixed override: $model" } else { 'auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)' })" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -698,7 +749,8 @@ $basePrompt
 "@
 
     $totalInputWords += Get-WordCount $planningPrompt
-    $planOutput = Invoke-Claude $planningPrompt "plan"
+    Write-Log "MODEL: haiku (planning)" "DarkCyan"
+    $planOutput = Invoke-Claude $planningPrompt "plan" (Resolve-ModelId "light")
     $totalOutputWords += Get-WordCount $planOutput
 
     # Extract from PLAN: onwards if Claude added preamble
@@ -902,7 +954,8 @@ $dependentSection
 
         $totalInputWords += ([math]::Round(($mergePrompt -split '\s+' | Where-Object { $_ }).Count))
         Write-Log "Calling Claude (merge)..." "Cyan"
-        $mergeOutput = Invoke-Claude $mergePrompt "merge"
+        Write-Log "MODEL: sonnet (merge)" "DarkCyan"
+        $mergeOutput = Invoke-Claude $mergePrompt "merge" (Resolve-ModelId "standard")
         $totalOutputWords += ([math]::Round(($mergeOutput -split '\s+' | Where-Object { $_ }).Count))
 
         if ($v) { Write-Host $mergeOutput }
@@ -977,7 +1030,8 @@ Your job now is to act as a QA engineer and adversarial tester.
   $qaToken
 "@
             $totalInputWords += ([math]::Round(($qaPrompt -split '\s+' | Where-Object { $_ }).Count))
-            $qaOut = Invoke-Claude $qaPrompt "qa_parallel"
+            Write-Log "MODEL: sonnet (QA)" "DarkCyan"
+            $qaOut = Invoke-Claude $qaPrompt "qa_parallel" (Resolve-ModelId "standard")
             $totalOutputWords += ([math]::Round(($qaOut -split '\s+' | Where-Object { $_ }).Count))
 
             if ($v) { Write-Host $qaOut }
@@ -1032,6 +1086,12 @@ Write-Banner "PHASE 1 - BUILD" "Yellow"
 $completed = $false
 $failureStreak = 0
 
+# 7.2 — Adaptive Escalation state
+$escalationFloor     = ""     # "" / "standard" / "heavy"
+$escalatedToStandard = $false
+$escalatedToHeavy    = $false
+$noProgressStreak    = 0      # resets on progress or on each escalation event
+
 for ($iter = $startIter; $iter -le $i; $iter++) {
 
     $elapsed = ((Get-Date) - $startTime).TotalSeconds
@@ -1074,7 +1134,8 @@ Continue from where you left off. Output $token when everything is done.
 
         $compressionPrompt = "Summarize these progress notes in 10 concise bullet points. Output only the bullet points, no preamble, no explanation:`n`n$priorProgress"
         $totalInputWords += Get-WordCount $compressionPrompt
-        $compressedRaw = Invoke-Claude $compressionPrompt "compress_$iter"
+        Write-Log "MODEL: haiku (context compression)" "DarkCyan"
+        $compressedRaw = Invoke-Claude $compressionPrompt "compress_$iter" (Resolve-ModelId "light")
         $totalOutputWords += Get-WordCount $compressedRaw
 
         $compressedLines = @($compressedRaw -split "`n" | Where-Object { $_ -match "\S" })
@@ -1104,9 +1165,21 @@ Continue from where you left off. Output $token when everything is done.
         }
     }
 
+    $buildTier    = if ($model) { $model } else { Get-TaskTier $fullPrompt $iter ($priorProgress -ne "") }
+
+    # 7.2: Apply escalation floor (never let tier drop below floor)
+    if (-not $model) {
+        if     ($escalationFloor -eq "heavy"    -and $buildTier -ne "heavy")   { $buildTier = "heavy" }
+        elseif ($escalationFloor -eq "standard" -and $buildTier -eq "light")   { $buildTier = "standard" }
+    }
+
+    $buildModelId = Resolve-ModelId $buildTier
+    $buildLabel   = if ($script:tierLabel.ContainsKey($buildModelId)) { $script:tierLabel[$buildModelId] } else { $buildModelId }
+    Write-Log "MODEL: $buildLabel (build iter $iter)" "DarkCyan"
+    Add-Content $logFile "[$((Get-Date).ToString('HH:mm:ss'))] MODEL: $buildLabel (build iter $iter)"
     Write-Log "Calling Claude (build)..." "Yellow"
     $totalInputWords += Get-WordCount $fullPrompt
-    $output = Invoke-Claude $fullPrompt "build_$iter"
+    $output = Invoke-Claude $fullPrompt "build_$iter" $buildModelId
     $totalOutputWords += Get-WordCount $output
 
     if ($v) { Write-Host $output }
@@ -1126,7 +1199,8 @@ Continue from where you left off. Output $token when everything is done.
     } else { 0 }
 
     if ($progressCountAfter -gt $progressCountBefore) {
-        $failureStreak = 0
+        $failureStreak    = 0
+        $noProgressStreak = 0
 
         # Auto-Commit Checkpoint (3.2): commit after each iteration with new progress
         if ($useWorktree) {
@@ -1150,6 +1224,26 @@ Continue from where you left off. Output $token when everything is done.
         }
     } else {
         $failureStreak++
+        $noProgressStreak++
+
+        # 7.2: Adaptive Escalation — escalate after 2 consecutive no-progress iterations
+        if (-not $model -and $noProgressStreak -ge 2) {
+            if ($buildTier -eq "light" -and -not $escalatedToStandard) {
+                $escalatedToStandard = $true
+                $escalationFloor     = "standard"
+                $noProgressStreak    = 0
+                $escMsg = "ESCALATED: haiku -> sonnet (no progress after 2 iterations)"
+                Write-Log $escMsg "Yellow"
+                Add-Content $logFile "[$((Get-Date).ToString('HH:mm:ss'))] $escMsg"
+            } elseif ($buildTier -eq "standard" -and -not $escalatedToHeavy) {
+                $escalatedToHeavy = $true
+                $escalationFloor  = "heavy"
+                $noProgressStreak = 0
+                $escMsg = "ESCALATED: sonnet -> opus (no progress after 2 iterations)"
+                Write-Log $escMsg "Yellow"
+                Add-Content $logFile "[$((Get-Date).ToString('HH:mm:ss'))] $escMsg"
+            }
+        }
     }
 
     # Update session file after every iteration
@@ -1263,7 +1357,8 @@ Your job now is to act as a QA engineer and adversarial tester.
 "@
 
     $totalInputWords += Get-WordCount $qaPrompt
-    $output = Invoke-Claude $qaPrompt "qa"
+    Write-Log "MODEL: sonnet (QA)" "DarkCyan"
+    $output = Invoke-Claude $qaPrompt "qa" (Resolve-ModelId "standard")
     $totalOutputWords += Get-WordCount $output
 
     if ($v) { Write-Host $output }

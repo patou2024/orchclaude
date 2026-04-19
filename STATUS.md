@@ -9,8 +9,8 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 7.1 — Task Classifier
-**Last session date:** 2026-04-19
+**Next item to implement:** 7.3 — Cost-Aware Budget Mode
+**Last session date:** 2026-04-19 (7.2)
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -84,7 +84,7 @@ It is the first thing any new session should read before touching any code.
 ## Phase 7 Checklist — Smart Model Mode
 
 - [ ] 7.1 — Task Classifier (route iterations to haiku / sonnet / opus automatically)
-- [ ] 7.2 — Adaptive Escalation (escalate model when no progress detected)
+- [x] 7.2 — Adaptive Escalation (escalate model when no progress detected)
 - [ ] 7.3 — Cost-Aware Budget Mode (`-budget` flag)
 - [ ] 7.4 — Model Profile Presets (`-modelprofile fast/balanced/quality/auto`)
 
@@ -95,6 +95,21 @@ It is the first thing any new session should read before touching any code.
 - None currently logged.
 
 ---
+
+## Notes from Last Session (7.2)
+
+- Implemented 7.2: Adaptive Escalation.
+- Added `$escalationFloor` / `ESCALATION_FLOOR` variable (starts empty, ratchets up: "" → "standard" → "heavy").
+- Added `$noProgressStreak` / `NO_PROGRESS_STREAK` counter (separate from `$failureStreak`; resets on progress OR on each escalation event so the next tier gets a fresh 2-iteration window).
+- Added `$escalatedToStandard` / `$escalatedToHeavy` booleans to ensure each escalation fires exactly once per run (never de-escalates).
+- Escalation floor is applied after the 7.1 classifier — if the classifier picks a tier below the floor, the floor wins.
+- Escalation fires at `$noProgressStreak -ge 2`:
+  - light → standard: prints `ESCALATED: haiku -> sonnet (no progress after 2 iterations)`
+  - standard → heavy: prints `ESCALATED: sonnet -> opus (no progress after 2 iterations)`
+- Escalation events are written to both terminal (Yellow) and `orchclaude-log.txt`.
+- `-model` override bypasses both the classifier and the escalation floor (fixed model throughout).
+- Banner line updated: "auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)".
+- Changes applied to both `orchclaude.ps1` and `orchclaude.sh` (feature parity).
 
 ## Notes from Last Session (6.2)
 
