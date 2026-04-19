@@ -60,6 +60,28 @@ If the terminal is closed or power is lost mid-run:
     -dryrun         Print the full prompt that would be sent to Claude and exit.
                     No Claude call is made. No files are created or modified.
                     Use this to verify your prompt before committing to a long run.
+    -noplan         Skip the pre-planning phase. Use for simple one-step tasks where
+                    a full plan breakdown would add overhead with no benefit.
+    -profile <name> Load a saved profile's flags. Command-line flags override profile values.
+                    See: orchclaude profile save/list/delete
+
+  NAMED PROFILES
+    Save and reuse common flag combinations under a name.
+    Profiles are stored in: %USERPROFILE%\.orchclaude\profiles.json
+
+    orchclaude profile save <name> [flags]
+                    Save the given flags under a profile name.
+                    Example: orchclaude profile save bigrun -t 3h -i 80 -d "C:\Projects\MyApp"
+
+    orchclaude profile list
+                    List all saved profiles and their flags.
+
+    orchclaude profile delete <name>
+                    Remove a saved profile.
+
+    Use a profile on run:
+                    orchclaude run -f project.md -profile bigrun
+                    (Flags on the command line override profile values.)
 
   COST ESTIMATION
     After every run (completion, timeout, or circuit breaker) orchclaude prints:
@@ -104,6 +126,15 @@ If the terminal is closed or power is lost mid-run:
     orchclaude run "Build a login form" -t 30m -dryrun
     orchclaude run -f project.md -t 2h -dryrun
 
+  Skip pre-planning for a simple one-step fix:
+    orchclaude run "Fix the typo in footer.html" -t 5m -noplan
+
+  Save a profile for your main project:
+    orchclaude profile save myapp -t 2h -i 80 -d "C:\Projects\MyApp"
+    orchclaude profile list
+    orchclaude run -f feature.md -profile myapp
+    orchclaude run -f feature.md -profile myapp -t 30m    (overrides profile timeout)
+
   Require tests to pass before finishing (coming in Phase 1.1):
     orchclaude run "Add the login feature" -t 1h -test "npm test"
     orchclaude run -f project.md -t 2h -test "pytest"
@@ -112,6 +143,13 @@ If the terminal is closed or power is lost mid-run:
 ---
 
 ## How It Works
+
+  PRE-PLANNING PHASE (runs before build, unless -noplan is set)
+    1. A planning call is sent to Claude asking it to break your task into numbered
+       subtasks with dependencies. No code is written in this phase — output only.
+    2. The plan is saved to orchclaude-plan.txt and printed to the terminal.
+    3. Every subsequent build iteration receives the plan at the top of its prompt so
+       Claude always has a clear map of what to do next and in what order.
 
   PHASE 1 - BUILD
     1. Your prompt is sent to Claude Code with a strict contract:
@@ -160,6 +198,7 @@ If the terminal is closed or power is lost mid-run:
   orchclaude-log.txt       Full output from every build and QA iteration
   orchclaude-progress.txt  PROGRESS lines only - what Claude completed each step
   orchclaude-session.json  Session state (iteration, status, flags) for crash recovery
+  orchclaude-plan.txt      Numbered subtask plan generated in the pre-planning phase
 
 All files are created in the working directory (-d flag or current folder).
 

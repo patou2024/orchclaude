@@ -8,8 +8,8 @@ It is the first thing any new session should read before touching any code.
 ## Current State
 
 **Version:** 0.1.0
-**Phase:** 1 — Foundation Hardening
-**Next item to implement:** 2.3 — Named Profiles
+**Phase:** 2 — Planning and Intelligence
+**Next item to implement:** 3.1 — Git Worktree Isolation
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -50,7 +50,7 @@ It is the first thing any new session should read before touching any code.
 
 - [x] 2.1 — Pre-Planning Phase
 - [x] 2.2 — Context Window Guard
-- [ ] 2.3 — Named Profiles
+- [x] 2.3 — Named Profiles
 
 ---
 
@@ -98,14 +98,17 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Implemented 2.2: Context Window Guard.
-- No new flag — guard is always active.
-- Before each build iteration, estimates token count of the full prompt (words * 1.33).
-- If estimated tokens exceed 150,000: prints CONTEXT GUARD warning, runs a Claude summarization call, replaces orchclaude-progress.txt with the 10-bullet summary, rebuilds fullPrompt, and continues.
-- Compression call counts against totalInputWords/totalOutputWords for cost tracking.
-- Compression event logged to orchclaude-log.txt under `--- Context Guard compression at iteration N ---`.
-- Banner shows "Ctx guard: enabled" at startup.
-- Guard only fires when there is prior progress to compress (no-op on first iteration).
+- Implemented 2.3: Named Profiles.
+- Profiles stored in `%USERPROFILE%\.orchclaude\profiles.json` (human-readable JSON).
+- `orchclaude profile save <name> [flags]`: saves explicitly-passed flags using $PSBoundParameters.
+- `orchclaude profile list`: shows all profiles with their flag values.
+- `orchclaude profile delete <name>`: removes a profile; errors if not found.
+- `-profile <name>` on `orchclaude run`: loads profile flags; CLI flags override via $PSBoundParameters check.
+- Helper functions `Get-Profiles` / `Save-Profiles` defined globally for reuse.
+- Position=2 param `$SubArg` used to capture profile name in save/delete subcommands.
+- Banner shows "Profile: <name>" line when a profile is loaded.
+- README and ORCHCLAUDE-GUIDE.md updated with profile documentation and examples.
+- Phase 2 is now fully complete.
 
 ---
 

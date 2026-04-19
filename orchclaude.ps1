@@ -24,7 +24,10 @@ param(
     [int]$cooldown = 5,       # -cooldown <s>  : seconds between iterations (default 5, 0=off)
     [int]$breaker = 10,       # -breaker <n>   : circuit breaker after N stalled iterations (default 10, 0=off)
     [switch]$dryrun,           # -dryrun        : print the prompt that would be sent and exit (no Claude call, no files)
-    [switch]$noplan            # -noplan        : skip pre-planning phase
+    [switch]$noplan,           # -noplan        : skip pre-planning phase
+    [string]$profile = "",     # -profile <name>: load a saved profile's flags (CLI flags override)
+    [Parameter(Position=2)]
+    [string]$SubArg = ""       # for: orchclaude profile save <name>
 )
 
 # ---- Help ----
@@ -39,9 +42,96 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -profile"
+        Write-Host "  Profiles: orchclaude profile save <name> [flags]"
+        Write-Host "            orchclaude profile list"
+        Write-Host "            orchclaude profile delete <name>"
     }
     exit 0
+}
+
+# ---- Profile helpers ----
+$profilesDir  = Join-Path $env:USERPROFILE ".orchclaude"
+$profilesFile = Join-Path $profilesDir "profiles.json"
+
+function Get-Profiles {
+    if (-not (Test-Path $profilesFile)) { return @{} }
+    try {
+        $raw  = Get-Content $profilesFile -Raw | ConvertFrom-Json
+        $dict = @{}
+        $raw.PSObject.Properties | ForEach-Object { $dict[$_.Name] = $_.Value }
+        return $dict
+    } catch { return @{} }
+}
+
+function Save-Profiles($dict) {
+    if (-not (Test-Path $profilesDir)) { New-Item -ItemType Directory -Path $profilesDir | Out-Null }
+    $dict | ConvertTo-Json -Depth 5 | Set-Content $profilesFile -Encoding UTF8
+}
+
+# ---- Profile command ----
+if ($Command -eq "profile") {
+    $subCmd = $Prompt.ToLower()
+
+    if ($subCmd -eq "save") {
+        if (-not $SubArg) {
+            Write-Error "Usage: orchclaude profile save <name> [flags...]"
+            exit 1
+        }
+        $profiles = Get-Profiles
+        $profiles[$SubArg] = [ordered]@{
+            t        = $t
+            i        = $i
+            d        = $d
+            v        = [bool]$v
+            noqa     = [bool]$noqa
+            token    = $token
+            cooldown = $cooldown
+            breaker  = $breaker
+            noplan   = [bool]$noplan
+        }
+        Save-Profiles $profiles
+        Write-Host "Profile '$SubArg' saved to $profilesFile" -ForegroundColor Green
+        exit 0
+    }
+    elseif ($subCmd -eq "list") {
+        $profiles = Get-Profiles
+        if ($profiles.Count -eq 0) {
+            Write-Host "No profiles saved. Use: orchclaude profile save <name> [flags...]" -ForegroundColor Yellow
+        } else {
+            Write-Host ""
+            Write-Host "Saved profiles:" -ForegroundColor Cyan
+            Write-Host ("-" * 45)
+            foreach ($key in ($profiles.Keys | Sort-Object)) {
+                $p = $profiles[$key]
+                Write-Host "  $key" -ForegroundColor White
+                $line = "    t=$($p.t)  i=$($p.i)  cooldown=$($p.cooldown)  breaker=$($p.breaker)  noqa=$($p.noqa)  noplan=$($p.noplan)"
+                Write-Host $line -ForegroundColor DarkGray
+                if ($p.d) { Write-Host "    d=$($p.d)" -ForegroundColor DarkGray }
+            }
+            Write-Host ""
+        }
+        exit 0
+    }
+    elseif ($subCmd -eq "delete") {
+        if (-not $SubArg) {
+            Write-Error "Usage: orchclaude profile delete <name>"
+            exit 1
+        }
+        $profiles = Get-Profiles
+        if (-not $profiles.ContainsKey($SubArg)) {
+            Write-Error "Profile '$SubArg' not found. Use 'orchclaude profile list' to see available profiles."
+            exit 1
+        }
+        $profiles.Remove($SubArg)
+        Save-Profiles $profiles
+        Write-Host "Profile '$SubArg' deleted." -ForegroundColor Green
+        exit 0
+    }
+    else {
+        Write-Error "Unknown profile subcommand '$subCmd'. Use: save, list, delete"
+        exit 1
+    }
 }
 
 # ---- Status command ----
@@ -116,9 +206,28 @@ if ($Command -eq "resume") {
     $resumeMode = $true
 }
 
+# ---- Load named profile (CLI flags take precedence) ----
+if ($profile -and -not $resumeMode) {
+    $profiles = Get-Profiles
+    if (-not $profiles.ContainsKey($profile)) {
+        Write-Error "Profile '$profile' not found. Use 'orchclaude profile list' to see available profiles."
+        exit 1
+    }
+    $p = $profiles[$profile]
+    if (-not $PSBoundParameters.ContainsKey('t'))        { $t        = $p.t }
+    if (-not $PSBoundParameters.ContainsKey('i'))        { $i        = [int]$p.i }
+    if (-not $PSBoundParameters.ContainsKey('d'))        { $d        = "$($p.d)" }
+    if (-not $PSBoundParameters.ContainsKey('v'))        { $v        = [System.Management.Automation.SwitchParameter][bool]$p.v }
+    if (-not $PSBoundParameters.ContainsKey('noqa'))     { $noqa     = [System.Management.Automation.SwitchParameter][bool]$p.noqa }
+    if (-not $PSBoundParameters.ContainsKey('token'))    { $token    = $p.token }
+    if (-not $PSBoundParameters.ContainsKey('cooldown')) { $cooldown = [int]$p.cooldown }
+    if (-not $PSBoundParameters.ContainsKey('breaker'))  { $breaker  = [int]$p.breaker }
+    if (-not $PSBoundParameters.ContainsKey('noplan'))   { $noplan   = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
+}
+
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude help"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -302,6 +411,7 @@ Write-Log "Cooldown  : $(if ($cooldown -eq 0) { 'disabled (-cooldown 0)' } else 
 Write-Log "Breaker   : $(if ($breaker -eq 0) { 'disabled (-breaker 0)' } else { "fires after ${breaker} stalled iterations" })" "Cyan"
 Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (use -noplan to skip)' })" "Cyan"
 Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150k tokens)" "Cyan"
+if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
     Write-Log "Resuming  : starting at iteration $startIter" "Cyan"
