@@ -57,6 +57,9 @@ If the terminal is closed or power is lost mid-run:
     -cooldown <s>   Seconds to wait between iterations. Default: 5. Use 0 to disable.
     -breaker <n>    Pause and ask if Claude stalls for N iterations with no new progress.
                     Default: 10. Use 0 to disable.
+    -dryrun         Print the full prompt that would be sent to Claude and exit.
+                    No Claude call is made. No files are created or modified.
+                    Use this to verify your prompt before committing to a long run.
 
   COST ESTIMATION
     After every run (completion, timeout, or circuit breaker) orchclaude prints:
@@ -96,6 +99,10 @@ If the terminal is closed or power is lost mid-run:
 
   Skip QA for a quick one-off fix:
     orchclaude run "Fix the typo in homepage" -t 10m -noqa
+
+  Preview what will be sent to Claude without running:
+    orchclaude run "Build a login form" -t 30m -dryrun
+    orchclaude run -f project.md -t 2h -dryrun
 
   Require tests to pass before finishing (coming in Phase 1.1):
     orchclaude run "Add the login feature" -t 1h -test "npm test"
