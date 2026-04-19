@@ -9,8 +9,8 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 7.4 — Model Profile Presets
-**Last session date:** 2026-04-19 (7.3)
+**Next item to implement:** Feature Backlog (see ROADMAP.md)
+**Last session date:** 2026-04-19 (7.4)
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -86,7 +86,7 @@ It is the first thing any new session should read before touching any code.
 - [ ] 7.1 — Task Classifier (route iterations to haiku / sonnet / opus automatically)
 - [x] 7.2 — Adaptive Escalation (escalate model when no progress detected)
 - [x] 7.3 — Cost-Aware Budget Mode (`-budget` flag)
-- [ ] 7.4 — Model Profile Presets (`-modelprofile fast/balanced/quality/auto`)
+- [x] 7.4 — Model Profile Presets (`-modelprofile fast/balanced/quality/auto`)
 
 ---
 
@@ -95,6 +95,22 @@ It is the first thing any new session should read before touching any code.
 - None currently logged.
 
 ---
+
+## Notes from Last Session (7.4)
+
+- Implemented 7.4: Model Profile Presets.
+- Added `-modelprofile <preset>` flag to both `orchclaude.ps1` and `orchclaude.sh`.
+- Four presets:
+  - `fast` — sets `$model = "light"` (haiku throughout); bypasses classifier and escalation.
+  - `quality` — sets `$model = "heavy"` (opus throughout); bypasses classifier and escalation.
+  - `balanced` — runs the 7.1 classifier per iteration but disables 7.2 adaptive escalation (`$noEscalation = $true` / `NO_ESCALATION=true`).
+  - `auto` — no-op; uses current default behavior (classifier + escalation).
+- Unknown preset values exit with a clear error message.
+- `-model` always wins over `-modelprofile` (explicit model ID takes precedence).
+- Escalation floor application and escalation firing both gated with `noEscalation` flag.
+- Banner updated: "Model : -modelprofile <preset> (<description>)" when a profile is active.
+- Help flags line updated to include `-modelprofile`.
+- Phase 7 checklist now fully complete.
 
 ## Notes from Last Session (7.3)
 

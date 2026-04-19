@@ -270,6 +270,7 @@ PROFILE_NAME=""
 AGENTS=1
 MODEL_OVERRIDE=""
 BUDGET=0
+MODEL_PROFILE=""
 SUBARG=""
 SHOW_HELP=false
 
@@ -289,8 +290,9 @@ while [[ $# -gt 0 ]]; do
         -nobranch) NOBRANCH=true;        shift   ;;
         -profile)  PROFILE_NAME="${2:-}"; shift 2 ;;
         -agents)   AGENTS="${2:-}";           shift 2 ;;
-        -model)    MODEL_OVERRIDE="${2:-}";   shift 2 ;;
-        -budget)   BUDGET="${2:-}";           shift 2 ;;
+        -model)        MODEL_OVERRIDE="${2:-}";   shift 2 ;;
+        -budget)       BUDGET="${2:-}";           shift 2 ;;
+        -modelprofile) MODEL_PROFILE="${2:-}";    shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -306,6 +308,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ---- 7.4: Model Profile Presets ----
+NO_ESCALATION=false
+if [[ -n "$MODEL_PROFILE" ]]; then
+    case "${MODEL_PROFILE,,}" in
+        fast)     [[ -z "$MODEL_OVERRIDE" ]] && MODEL_OVERRIDE="light" ;;
+        quality)  [[ -z "$MODEL_OVERRIDE" ]] && MODEL_OVERRIDE="heavy" ;;
+        balanced) NO_ESCALATION=true ;;
+        auto)     ;;   # classifier + escalation (default)
+        *)
+            printf "${RED}Unknown -modelprofile '%s'. Valid values: fast, balanced, quality, auto${NC}\n" "$MODEL_PROFILE" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # ------------------------------------------------------------------ #
 # Help
 # ------------------------------------------------------------------ #
@@ -320,7 +337,7 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget\n"
+        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
         printf "          orchclaude profile delete <name>\n"
@@ -734,7 +751,20 @@ else
     write_log "Worktree  : not a git repo — writing directly" "$CYAN"
 fi
 write_log "Agents    : $( [[ "$AGENTS" -gt 1 ]] && echo "$AGENTS parallel agents (independent tasks split from plan)" || echo '1 (sequential, default)' )" "$CYAN"
-write_log "Model     : $( [[ -n "$MODEL_OVERRIDE" ]] && echo "fixed override: $MODEL_OVERRIDE" || echo 'auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)' )" "$CYAN"
+if [[ -n "$MODEL_PROFILE" ]]; then
+    case "${MODEL_PROFILE,,}" in
+        fast)     _mp_desc="-modelprofile fast (all iterations: haiku)" ;;
+        quality)  _mp_desc="-modelprofile quality (all iterations: opus)" ;;
+        balanced) _mp_desc="-modelprofile balanced (classifier, no escalation)" ;;
+        auto)     _mp_desc="-modelprofile auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)" ;;
+        *)        _mp_desc="-modelprofile $MODEL_PROFILE" ;;
+    esac
+    write_log "Model     : $_mp_desc" "$CYAN"
+elif [[ -n "$MODEL_OVERRIDE" ]]; then
+    write_log "Model     : fixed override: $MODEL_OVERRIDE" "$CYAN"
+else
+    write_log "Model     : auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)" "$CYAN"
+fi
 write_log "Budget    : $( [[ "$BUDGET" != "0" && -n "$BUDGET" ]] && echo "\$$BUDGET limit — pause and confirm if cost exceeds threshold" || echo 'disabled (use -budget <amount> to set a limit)' )" "$CYAN"
 [[ -n "$PROFILE_NAME" ]] && write_log "Profile   : $PROFILE_NAME (loaded from $PROFILES_FILE)" "$CYAN"
 write_log "Log       : $LOG_FILE" "$CYAN"
@@ -1191,7 +1221,7 @@ Continue from where you left off. Output $TOKEN when everything is done."
     BUILD_TIER="$( [[ -n "$MODEL_OVERRIDE" ]] && echo "$MODEL_OVERRIDE" || get_task_tier "$FULL_PROMPT" "$iter" "$has_prior" )"
 
     # 7.2: Apply escalation floor
-    if [[ -z "$MODEL_OVERRIDE" ]]; then
+    if [[ -z "$MODEL_OVERRIDE" && "$NO_ESCALATION" == "false" ]]; then
         if   [[ "$ESCALATION_FLOOR" == "heavy"    && "$BUILD_TIER" != "heavy"    ]]; then BUILD_TIER="heavy"
         elif [[ "$ESCALATION_FLOOR" == "standard" && "$BUILD_TIER" == "light"    ]]; then BUILD_TIER="standard"
         fi
@@ -1246,7 +1276,7 @@ Continue from where you left off. Output $TOKEN when everything is done."
         NO_PROGRESS_STREAK=$((NO_PROGRESS_STREAK + 1))
 
         # 7.2: Adaptive Escalation — escalate after 2 consecutive no-progress iterations
-        if [[ -z "$MODEL_OVERRIDE" && "$NO_PROGRESS_STREAK" -ge 2 ]]; then
+        if [[ -z "$MODEL_OVERRIDE" && "$NO_ESCALATION" == "false" && "$NO_PROGRESS_STREAK" -ge 2 ]]; then
             if [[ "$BUILD_TIER" == "light" && "$ESCALATED_TO_STANDARD" == "false" ]]; then
                 ESCALATED_TO_STANDARD=true
                 ESCALATION_FLOOR="standard"

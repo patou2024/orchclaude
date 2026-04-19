@@ -31,8 +31,24 @@ param(
     [Parameter(Position=2)]
     [string]$SubArg = "",      # for: orchclaude profile save <name>
     [string]$model = "",        # -model <tier>: light, standard, heavy, or raw model ID (default: auto-classify)
-    [double]$budget = 0         # -budget <amount>: pause and confirm if estimated cost exceeds this (0 = disabled)
+    [double]$budget = 0,        # -budget <amount>: pause and confirm if estimated cost exceeds this (0 = disabled)
+    [string]$modelprofile = ""  # -modelprofile <preset>: fast | balanced | quality | auto
 )
+
+# ---- 7.4: Model Profile Presets ----
+$noEscalation = $false
+if ($modelprofile -ne "") {
+    switch ($modelprofile.ToLower()) {
+        "fast"     { if (-not $model) { $model = "light"  } }
+        "quality"  { if (-not $model) { $model = "heavy"  } }
+        "balanced" { $noEscalation = $true }
+        "auto"     { }   # classifier + escalation (default)
+        default    {
+            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
+            exit 1
+        }
+    }
+}
 
 # ---- Help ----
 if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
@@ -47,7 +63,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
         Write-Host "  Commands: run, resume, status, dashboard, log, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -742,7 +758,21 @@ Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (
 Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150k tokens)" "Cyan"
 Write-Log "Worktree  : $(if ($nobranch) { 'disabled (-nobranch)' } elseif ($useWorktree) { "branch $worktreeBranch" } elseif ($isGitRepo) { 'git repo detected but worktree creation failed — writing directly' } else { 'not a git repo — writing directly' })" "Cyan"
 Write-Log "Agents    : $(if ($agents -gt 1) { "$agents parallel agents (independent tasks split from plan)" } else { '1 (sequential, default)' })" "Cyan"
-Write-Log "Model     : $(if ($model) { "fixed override: $model" } else { 'auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)' })" "Cyan"
+$modelBannerVal = if ($modelprofile -ne "") {
+    $profileDesc = switch ($modelprofile.ToLower()) {
+        "fast"     { "fast (all iterations: haiku)" }
+        "quality"  { "quality (all iterations: opus)" }
+        "balanced" { "balanced (classifier, no escalation)" }
+        "auto"     { "auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)" }
+        default    { $modelprofile }
+    }
+    "-modelprofile $profileDesc"
+} elseif ($model) {
+    "fixed override: $model"
+} else {
+    "auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)"
+}
+Write-Log "Model     : $modelBannerVal" "Cyan"
 Write-Log "Budget    : $(if ($budget -gt 0) { "`$$budget limit — pause and confirm if cost exceeds threshold" } else { 'disabled (use -budget <amount> to set a limit)' })" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
@@ -1199,7 +1229,7 @@ Continue from where you left off. Output $token when everything is done.
     $buildTier    = if ($model) { $model } else { Get-TaskTier $fullPrompt $iter ($priorProgress -ne "") }
 
     # 7.2: Apply escalation floor (never let tier drop below floor)
-    if (-not $model) {
+    if (-not $model -and -not $noEscalation) {
         if     ($escalationFloor -eq "heavy"    -and $buildTier -ne "heavy")   { $buildTier = "heavy" }
         elseif ($escalationFloor -eq "standard" -and $buildTier -eq "light")   { $buildTier = "standard" }
     }
@@ -1258,7 +1288,7 @@ Continue from where you left off. Output $token when everything is done.
         $noProgressStreak++
 
         # 7.2: Adaptive Escalation — escalate after 2 consecutive no-progress iterations
-        if (-not $model -and $noProgressStreak -ge 2) {
+        if (-not $model -and -not $noEscalation -and $noProgressStreak -ge 2) {
             if ($buildTier -eq "light" -and -not $escalatedToStandard) {
                 $escalatedToStandard = $true
                 $escalationFloor     = "standard"
