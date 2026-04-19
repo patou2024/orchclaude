@@ -1,137 +1,189 @@
-# orchclaude - Guide
+# orchclaude
 
-Keeps Claude running on a project until it finishes - not until Claude decides it's done.
-After the build, automatically runs a QA pass that checks edge cases and fixes issues.
+A lightweight Windows orchestrator that keeps Claude Code running on a project until the work is actually done — not until Claude decides it is.
 
----
-
-## One-Time Setup
-
-1. Add orchclaude to your PATH (run once in PowerShell):
-
-    [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";C:\Users\pana5\bin", "User")
-
-   Then close and reopen your terminal.
-
-2. Allow PowerShell scripts (run once if not already done):
-
-    Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+Built in a single 20-minute session as a proof of concept. Works well enough to be useful. There is plenty of room to improve and I will update it as I find new use cases or run into limitations.
 
 ---
 
-## Basic Usage
+## The Problem
 
-    orchclaude run "your prompt here" -t 30m
-
-Claude runs, loops, and stops when it's finished - or when time runs out.
+Claude Code stops when it thinks it is done. That is not always when you want it to stop. `orchclaude` flips that around — you define what "done" means, and Claude loops until it gets there.
 
 ---
 
-## Syntax
+## Platform
 
-    orchclaude run "<prompt>"  -t <timeout>  [options]
-    orchclaude run -f <file>   -t <timeout>  [options]
+**Windows only.** Requires PowerShell and Claude Code CLI.
 
----
-
-## Flags
-
-  REQUIRED
-    "prompt"        Describe what to build. Be as detailed as you want.
-    -t <time>       Timeout. Number + m or h. Examples: -t 5m  -t 2h  -t 90m
-
-  OPTIONAL
-    -f <file>       Load prompt from a .md or .txt file instead of typing inline
-    -i <number>     Max iterations (loops) before giving up. Default: 40
-    -d <path>       Working directory - where Claude reads and writes files. Default: current folder
-    -v              Verbose - print Claude's full output every iteration
-    -noqa           Skip the automatic QA + edge case evaluation pass
-    -token <word>   Custom word Claude must say to finish. Default: ORCHESTRATION_COMPLETE
+- Windows 10 / 11
+- [Claude Code](https://claude.ai/code) installed and signed in
+- PowerShell (built into Windows — no install needed)
 
 ---
 
-## Examples
+## What It Does
 
-  Quick one-liner:
-    orchclaude run "Build a Python script that renames all files in a folder by date" -t 20m
+**Phase 1 — Build**
+Sends your prompt to Claude Code with a strict contract: make real file changes, report progress, and do not stop until all requirements are met. If Claude stops early, it gets the same prompt again with its prior progress attached so it picks up where it left off.
 
-  From a project spec file:
-    orchclaude run -f my-project.md -t 2h
-
-  Longer project with higher iteration cap:
-    orchclaude run -f big-project.md -t 3h -i 80
-
-  Specific working directory:
-    orchclaude run "Add dark mode to the frontend" -t 45m -d "C:\Projects\MyApp"
-
-  See what Claude is doing in real time:
-    orchclaude run "Refactor the auth module" -t 30m -v
-
-  Skip QA for a quick one-off fix:
-    orchclaude run "Fix the typo in homepage" -t 10m -noqa
+**Phase 2 — QA (automatic)**
+Once the build is complete, runs a second pass where Claude acts as an adversarial tester. It reads every output file, checks for edge cases (empty input, special characters, rapid clicks, localStorage failures, invalid formats, leftover state, etc.), and fixes every issue it finds directly in the files. Every finding is printed and logged.
 
 ---
 
-## How It Works
+## Installation
 
-  PHASE 1 - BUILD
-    1. Your prompt is sent to Claude Code with a strict contract:
-       "Do not stop until all requirements are met. Output ORCHESTRATION_COMPLETE when done."
-    2. After each iteration, PROGRESS lines Claude printed are collected and fed back
-       so Claude knows exactly what it already did and picks up where it left off.
-    3. Loop repeats until Claude outputs the completion token OR timeout is hit.
+**1. Clone or download this repo**
 
-  PHASE 2 - QA (automatic, runs after build)
-    1. Claude switches to adversarial tester mode and reads all output files.
-    2. It checks for edge cases across these categories:
-       - Empty, null, or missing input
-       - Extremely long strings
-       - Special characters and unicode
-       - Rapid repeated actions / button spam
-       - localStorage full or unavailable
-       - Negative numbers, zero, invalid date formats
-       - State left over from a previous session
-       - Async failures if any fetch code exists
-    3. Every issue found is fixed directly in the files (not just reported).
-    4. Findings print as:  QA_FINDING: <issue and fix applied>
-    5. Summary prints as:  QA_SUMMARY: <N issues found, N fixed>
+```
+git clone https://github.com/patou2024/orchclaude.git
+```
 
-  Use -noqa to skip Phase 2 entirely.
+Or download `orchclaude.ps1` and `orchclaude.cmd` manually.
+
+**2. Put the files in a folder**, for example:
+
+```
+C:\Users\YourName\bin\
+```
+
+**3. Add that folder to your PATH** (run once in PowerShell):
+
+```powershell
+[Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";C:\Users\YourName\bin", "User")
+```
+
+Then close and reopen your terminal.
+
+**4. Allow PowerShell scripts** (run once if not already done):
+
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+---
+
+## Usage
+
+```
+orchclaude run "your prompt here" -t 30m
+```
+
+Claude runs, loops, and stops when it finishes — or when your timeout is hit.
+
+### Syntax
+
+```
+orchclaude run "<prompt>"  -t <timeout>  [options]
+orchclaude run -f <file>   -t <timeout>  [options]
+```
+
+### Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-t <time>` | Timeout. Format: `30m`, `2h`, `90m` | `30m` |
+| `-f <file>` | Load prompt from a `.md` or `.txt` file | — |
+| `-i <number>` | Max iterations before giving up | `40` |
+| `-d <path>` | Working directory for Claude to operate in | current folder |
+| `-v` | Verbose — print Claude's full output each iteration | off |
+| `-noqa` | Skip the automatic QA pass | off |
+| `-token <word>` | Custom completion token | `ORCHESTRATION_COMPLETE` |
+
+### Examples
+
+```powershell
+# Inline prompt
+orchclaude run "Build a Node.js REST API with /health and /users endpoints" -t 30m
+
+# From a spec file
+orchclaude run -f my-project.md -t 2h
+
+# Specific folder, verbose output
+orchclaude run "Add dark mode" -t 45m -d "C:\Projects\MyApp" -v
+
+# Skip QA for quick fixes
+orchclaude run "Fix the typo on the homepage" -t 10m -noqa
+```
+
+---
+
+## Project Spec Files
+
+For larger projects, write your requirements in a markdown file:
+
+```markdown
+# Project: My App
+
+## Goal
+Build a ...
+
+## Acceptance Criteria
+- [ ] Feature A works
+- [ ] Feature B works
+
+## Tech Stack
+- Node.js, Express
+```
+
+Then run:
+
+```
+orchclaude run -f my-project.md -t 1h
+```
 
 ---
 
 ## Output Files
 
-  orchclaude-log.txt       Full output from every build and QA iteration
-  orchclaude-progress.txt  PROGRESS lines only - what Claude completed each step
+After each run, two files are created in your working directory:
 
-Both files are created in the working directory (-d flag or current folder).
-
----
-
-## Project Spec File Format
-
-For bigger projects write your requirements in a .md file:
-
-    # Project: My App
-
-    ## Goal
-    Build a ...
-
-    ## Acceptance Criteria
-    - [ ] Feature A works
-    - [ ] Feature B works
-    - [ ] Tests pass
-
-    ## Tech Stack
-    - Node.js, Express, ...
-
-Then run:
-    orchclaude run -f my-project.md -t 1h
+| File | Contents |
+|------|----------|
+| `orchclaude-log.txt` | Full output from every build and QA iteration |
+| `orchclaude-progress.txt` | Progress lines only — what Claude completed each step |
 
 ---
 
-## Get Help
+## Full Help
 
-    orchclaude help
-    orchclaude --help
+```
+orchclaude --help
+```
+
+Prints the complete guide directly in your terminal.
+
+---
+
+## Current Limitations
+
+- Windows only (no Mac / Linux support yet)
+- Requires Claude Code CLI — does not work with the Claude Desktop chat app
+- No parallel agents — runs one Claude session at a time
+- QA pass is general purpose — it does not know your specific test suite
+- Built in one session, so edge cases in the orchestrator itself likely exist
+
+---
+
+## Roadmap / Ideas
+
+Things I may add depending on how I end up using this:
+
+- Mac / Linux support
+- `--dry-run` flag to preview the prompt before sending
+- Named profiles to save common flag combinations
+- Post-build hook to run your own test script and feed results back to Claude
+- Multi-file project spec with automatic context loading
+
+---
+
+## Contributing
+
+This is a personal project but pull requests are welcome. If you find a bug or have a clear improvement, open an issue or PR.
+
+---
+
+## License
+
+MIT
