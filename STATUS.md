@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 1 — Foundation Hardening
-**Next item to implement:** 1.2 — Crash Recovery (`orchclaude resume`)
+**Next item to implement:** 1.3 — Rate Limiting and Circuit Breaker
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -39,7 +39,7 @@ It is the first thing any new session should read before touching any code.
 ## Phase 1 Checklist
 
 - [x] 1.1 — External Validation Gate (`-test` flag)
-- [ ] 1.2 — Crash Recovery (`orchclaude resume`)
+- [x] 1.2 — Crash Recovery (`orchclaude resume`)
 - [ ] 1.3 — Rate Limiting and Circuit Breaker
 - [ ] 1.4 — Token / Cost Estimator
 - [ ] 1.5 — `--dry-run` flag
@@ -98,13 +98,15 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Implemented 1.1: External Validation Gate (-test flag).
-- After each completion claim, the test command runs via cmd /c.
-- Test failure injects $testFailureContext into the next iteration prompt.
-- Test output capped at 40 lines to keep prompts manageable.
-- Works with npm test, pytest, cargo test, any shell command.
-- em dash characters cause PowerShell parse errors — avoid in script strings, use plain dash.
-- Exit code 1 on git push is a false alarm — git writes remote info to stderr.
+- Implemented 1.2: Crash Recovery (orchclaude resume / orchclaude status).
+- Session file written at run start, updated after every iteration with JSON state.
+- Status field stays "running" on Ctrl+C (no extra signal handling needed).
+- `orchclaude resume` restores prompt, flags, progress lines, and startIter from session.
+- `orchclaude status` prints iteration count, elapsed time, and last PROGRESS line.
+- On timeout or BUILD INCOMPLETE, status is set to "timeout" and a resume hint is printed.
+- On successful completion, status is set to "complete".
+- `-d` flag works on both resume and status to point at a non-current work dir.
+- Switch params ($noqa, $v) serialized as booleans in JSON; deserialized with [bool] cast.
 
 ---
 

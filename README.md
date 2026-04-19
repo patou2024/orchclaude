@@ -25,12 +25,19 @@ After the build, automatically runs a QA pass that checks edge cases and fixes i
 
 Claude runs, loops, and stops when it's finished - or when time runs out.
 
+If the terminal is closed or power is lost mid-run:
+
+    orchclaude resume          (continue where it left off)
+    orchclaude status          (show current session state)
+
 ---
 
 ## Syntax
 
     orchclaude run "<prompt>"  -t <timeout>  [options]
     orchclaude run -f <file>   -t <timeout>  [options]
+    orchclaude resume          [-d <path>]
+    orchclaude status          [-d <path>]
 
 ---
 
@@ -48,11 +55,15 @@ Claude runs, loops, and stops when it's finished - or when time runs out.
     -noqa           Skip the automatic QA + edge case evaluation pass
     -token <word>   Custom word Claude must say to finish. Default: ORCHESTRATION_COMPLETE
 
-  COMING SOON (Phase 1.1)
+  CRASH RECOVERY
+    resume          Continue an interrupted run (Ctrl+C, power loss, terminal close).
+                    Reads orchclaude-session.json in the work dir and picks up from the
+                    last completed iteration. Progress lines are preserved and fed back.
+    status          Show iteration count, elapsed time, and last progress line for the
+                    current session without resuming it.
+
+  COMING SOON (Phase 1.3+)
     -test <cmd>     Validation command to run after each completion claim.
-                    Claude only finishes if this command exits with code 0.
-                    If tests fail, Claude is re-run with the failure output attached.
-                    Works with any command: npm test, pytest, cargo test, .ps1 scripts, etc.
 
 ---
 
@@ -115,8 +126,9 @@ Claude runs, loops, and stops when it's finished - or when time runs out.
 
   orchclaude-log.txt       Full output from every build and QA iteration
   orchclaude-progress.txt  PROGRESS lines only - what Claude completed each step
+  orchclaude-session.json  Session state (iteration, status, flags) for crash recovery
 
-Both files are created in the working directory (-d flag or current folder).
+All files are created in the working directory (-d flag or current folder).
 
 ---
 
