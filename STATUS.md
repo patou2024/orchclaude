@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 1 — Foundation Hardening
-**Next item to implement:** 1.3 — Rate Limiting and Circuit Breaker
+**Next item to implement:** 1.4 — Token / Cost Estimator
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -40,7 +40,7 @@ It is the first thing any new session should read before touching any code.
 
 - [x] 1.1 — External Validation Gate (`-test` flag)
 - [x] 1.2 — Crash Recovery (`orchclaude resume`)
-- [ ] 1.3 — Rate Limiting and Circuit Breaker
+- [x] 1.3 — Rate Limiting and Circuit Breaker
 - [ ] 1.4 — Token / Cost Estimator
 - [ ] 1.5 — `--dry-run` flag
 

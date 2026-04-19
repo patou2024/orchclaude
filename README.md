@@ -54,6 +54,9 @@ If the terminal is closed or power is lost mid-run:
     -v              Verbose - print Claude's full output every iteration
     -noqa           Skip the automatic QA + edge case evaluation pass
     -token <word>   Custom word Claude must say to finish. Default: ORCHESTRATION_COMPLETE
+    -cooldown <s>   Seconds to wait between iterations. Default: 5. Use 0 to disable.
+    -breaker <n>    Pause and ask if Claude stalls for N iterations with no new progress.
+                    Default: 10. Use 0 to disable.
 
   CRASH RECOVERY
     resume          Continue an interrupted run (Ctrl+C, power loss, terminal close).
