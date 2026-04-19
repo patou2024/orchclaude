@@ -15,6 +15,7 @@
     "orchclaude.sh",
     "orchclaude.cmd",
     "dashboard.html",
+    "logviewer.html",
     "README.md"
   ],
   "engines": {

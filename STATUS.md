@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 6.2 — Log Viewer
+**Next item to implement:** 7.1 — Task Classifier
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -77,7 +77,7 @@ It is the first thing any new session should read before touching any code.
 ## Phase 6 Checklist
 
 - [x] 6.1 — Status Dashboard
-- [ ] 6.2 — Log Viewer
+- [x] 6.2 — Log Viewer
 
 ---
 
@@ -96,7 +96,33 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
-## Notes from Last Session (6.1)
+## Notes from Last Session (6.2)
+
+- Implemented 6.2: Log Viewer.
+- Created `logviewer.html`: standalone dark-theme HTML log viewer with no external dependencies.
+  - Fetches `/api/logs` to get list of all `orchclaude-log*.txt` files in the work directory.
+  - Fetches `/api/log?file=<name>` to get full content of the selected log file.
+  - Polls every 3 seconds (live-friendly for in-progress runs).
+  - Color coding: PROGRESS lines → green, QA_FINDING/QA_SUMMARY/QA_PASS → yellow, ERROR/CIRCUIT BREAKER/TIMEOUT/FAILED → red, phase banners → blue, ORCHESTRATION_COMPLETE/TEST PASSED → bright green, all others → dim gray.
+  - Filter toolbar: ALL / PROGRESS / QA / ERRORS / INFO — single-click toggles.
+  - Live search input (200ms debounce) with `<mark>` highlight on matching text.
+  - File selector dropdown: auto-populates from workDir, sorted newest-first; supports switching between orchclaude-log.txt and agent logs (orchclaude-log-agent1.txt etc.).
+  - Line numbers in gutter for easy reference.
+  - Auto-scroll checkbox (on by default); unchecking lets the user browse historical lines without jumping.
+  - Line counter: "Lines: N visible / M total" updates with every filter/search change.
+  - Live dot indicator: green pulse when connected, gray when server unreachable.
+- Added `orchclaude log` command to `orchclaude.ps1`.
+  - Starts a PS HttpListener on port 7891 (separate from dashboard's 7890; no admin required for localhost).
+  - Serves: `GET /` → logviewer.html, `GET /api/logs` → JSON array of orchclaude-log*.txt filenames, `GET /api/log?file=<name>` → full file content.
+  - File parameter is sanitized (must match `^orchclaude-log[a-zA-Z0-9_\-]*\.txt$`) to prevent path traversal.
+  - Returns full file content (not capped at 200 lines like the dashboard endpoint).
+  - Opens browser automatically via `Start-Process`.
+  - Accepts `-d <path>` to point at a different work directory.
+- Added `logviewer.html` to `files` array in `package.json` so npm installs it alongside the scripts.
+- Updated help text and unknown-command error to include `log`.
+- Phase 6 now fully complete. Next: 7.1 Task Classifier.
+
+## Notes from Previous Session (6.1)
 
 - Implemented 6.1: Status Dashboard.
 - Created `dashboard.html`: standalone dark-theme HTML dashboard with no external dependencies.
