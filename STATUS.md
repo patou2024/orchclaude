@@ -8,7 +8,7 @@ It is the first thing any new session should read before touching any code.
 ## Current State
 
 **Version:** 0.1.0
-**Phase:** 2 — Planning and Intelligence
+**Phase:** 4 — Multi-Agent Execution
 **Next item to implement:** 4.1 — Parallel Agents
 **Last session date:** 2026-04-19
 **Windows stable:** yes
