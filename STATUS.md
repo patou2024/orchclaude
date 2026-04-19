@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 1 — Foundation Hardening
-**Next item to implement:** 1.5 — `--dry-run` flag
+**Next item to implement:** 2.1 — Pre-Planning Phase
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -42,7 +42,7 @@ It is the first thing any new session should read before touching any code.
 - [x] 1.2 — Crash Recovery (`orchclaude resume`)
 - [x] 1.3 — Rate Limiting and Circuit Breaker
 - [x] 1.4 — Token / Cost Estimator
-- [ ] 1.5 — `--dry-run` flag
+- [x] 1.5 — `--dry-run` flag
 
 ---
 
@@ -98,14 +98,13 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Implemented 1.4: Token / Cost Estimator.
-- Added `Get-WordCount` helper (words × 1.33 ≈ tokens).
-- Added `Show-CostEstimate` function: prints ~input tokens, ~output tokens, ~cost USD (estimate only).
-- Rates: $3/M input tokens, $15/M output tokens (claude-sonnet-4-x published rates).
-- Word counts accumulated in `$totalInputWords` / `$totalOutputWords` after every Invoke-Claude call (build + QA).
-- `Show-CostEstimate` called at all exit points: TIMEOUT in build loop, circuit breaker "n", BUILD INCOMPLETE, TIMEOUT before QA, and ALL DONE.
-- Cost line also written to log file via Write-Log.
-- README.md updated with COST ESTIMATION section.
+- Implemented 1.5: `--dry-run` flag.
+- Added `-dryrun` switch parameter to param block.
+- When set, builds the first-iteration prompt (basePrompt + orchestrationInstructions) and prints it to terminal with clear label.
+- Skips progress file creation, session file creation, and all Claude calls.
+- Exits cleanly with code 0 after printing.
+- Works with both inline prompts (`-Prompt`) and file prompts (`-f`).
+- Phase 1 is now fully complete.
 
 ---
 

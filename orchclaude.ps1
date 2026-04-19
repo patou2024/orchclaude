@@ -22,7 +22,8 @@ param(
     [switch]$noqa,            # -noqa          : skip QA pass
     [string]$token = "ORCHESTRATION_COMPLETE", # custom completion token
     [int]$cooldown = 5,       # -cooldown <s>  : seconds between iterations (default 5, 0=off)
-    [int]$breaker = 10        # -breaker <n>   : circuit breaker after N stalled iterations (default 10, 0=off)
+    [int]$breaker = 10,       # -breaker <n>   : circuit breaker after N stalled iterations (default 10, 0=off)
+    [switch]$dryrun            # -dryrun        : print the prompt that would be sent and exit (no Claude call, no files)
 )
 
 # ---- Help ----
@@ -37,7 +38,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun"
     }
     exit 0
 }
@@ -169,7 +170,7 @@ if ($resumeMode) {
     } else {
         "" | Set-Content $progressFile
     }
-} else {
+} elseif (-not $dryrun) {
     try {
         "" | Set-Content $progressFile -ErrorAction Stop
     } catch {
@@ -223,6 +224,19 @@ $orchestrationInstructions = @"
    $token
 ---
 "@
+
+# ---- Dry run ----
+if ($dryrun) {
+    $dryPrompt = $basePrompt + "`n" + $orchestrationInstructions
+    Write-Host ""
+    Write-Host "DRY RUN - prompt that would be sent to Claude:" -ForegroundColor Cyan
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host $dryPrompt
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "No Claude call made. No files created or modified." -ForegroundColor DarkGray
+    exit 0
+}
 
 $qaToken = "QA_COMPLETE"
 
