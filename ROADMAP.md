@@ -405,6 +405,99 @@ errors red. Makes long runs easy to review.
 
 ---
 
+## Phase 7 — Smart Model Mode
+
+Goal: automatically route each part of a run to the right Claude model based on what the task actually needs.
+Not every iteration requires the most powerful and expensive model. This phase makes orchclaude cost-aware and intelligent about model selection.
+
+---
+
+### 7.1 — Task Classifier
+
+**What it is:**
+Before each Claude call, run a lightweight classification step that reads the current task
+and decides which model tier is appropriate: light, standard, or heavy.
+
+**Why it matters:**
+A planning call, a progress check, or a simple file write does not need Opus.
+Routing cheap work to Haiku and expensive reasoning to Opus can cut run costs dramatically
+without affecting output quality.
+
+**Classification tiers:**
+
+  LIGHT (use claude-haiku-4-5)
+  - Reading files and summarizing what exists
+  - Generating a task plan or outline
+  - Progress compression (context window guard)
+  - QA finding summaries
+  - Simple file writes with no logic (README, config files, plain text)
+
+  STANDARD (use claude-sonnet-4-6)
+  - General feature implementation
+  - Most build iterations
+  - QA edge case evaluation and fixes
+  - Moderate reasoning tasks
+
+  HEAVY (use claude-opus-4-6)
+  - Architecture decisions
+  - Complex debugging across multiple files
+  - Security-sensitive code
+  - First iteration of a completely new project (needs the strongest understanding)
+  - Any iteration where the previous iteration failed the -test validation gate
+
+**Implementation:**
+- Add a classifier prompt that receives the current task description and outputs one of: LIGHT / STANDARD / HEAVY
+- Map each tier to a model ID
+- Pass the selected model to the claude call via --model flag
+- Print the selected tier at the start of each iteration: MODEL: haiku / sonnet / opus
+- Add `-model <tier>` flag to override: light, standard, heavy, or a raw model ID
+- Log model used per iteration in orchclaude-log.txt
+
+---
+
+### 7.2 — Adaptive Escalation
+
+**What it is:**
+Automatically escalate the model tier when an iteration fails to make progress.
+
+**Why it matters:**
+If two iterations in a row produce no new PROGRESS lines, the task may be too complex
+for the current model. Escalating to a stronger model often unblocks it.
+
+**Rules:**
+- 2 consecutive iterations with no new PROGRESS lines on LIGHT: escalate to STANDARD
+- 2 consecutive iterations with no new PROGRESS lines on STANDARD: escalate to HEAVY
+- Once escalated, do not de-escalate within the same run
+- Log escalation events: ESCALATED: haiku -> sonnet (no progress after 2 iterations)
+
+---
+
+### 7.3 — Cost-Aware Budget Mode
+
+**What it is:**
+Extends the cost estimator from Phase 1.4 to actively gate the run.
+If estimated spend exceeds a `-budget` threshold, pause and ask the user before continuing.
+
+**Flags:**
+- `-budget <amount>` — e.g. `-budget 0.50` for 50 cents
+- When estimated cost exceeds the budget, print a warning and prompt: "Continue? (y/n)"
+- If y: double the budget and continue
+- If n: exit cleanly with a summary of what was completed
+
+---
+
+### 7.4 — Model Profile Presets
+
+**What it is:**
+Named model strategies the user can apply with a single flag.
+
+  -modelprofile fast      All iterations use Haiku. Fastest and cheapest. Good for simple tasks.
+  -modelprofile balanced  Smart routing (7.1 classifier). Default when Phase 7 is enabled.
+  -modelprofile quality   All iterations use Opus. Slowest and most expensive. Best output.
+  -modelprofile auto      Adaptive (7.1 + 7.2 escalation). Starts cheap, escalates when stuck.
+
+---
+
 ## Feature Backlog (unscheduled)
 
 These are ideas with no phase assigned yet. They get promoted to a phase when the time is right.
@@ -412,6 +505,5 @@ These are ideas with no phase assigned yet. They get promoted to a phase when th
 - `orchclaude explain` — runs Claude in read-only mode and asks it to explain what it built
 - `orchclaude diff` — shows a clean diff of everything changed in the last run
 - Slack / Discord webhook notification when a run completes
-- Cost budget flag: `-budget $2.00` — stop the run if estimated cost exceeds the limit
 - Support for .orchclauderc config file in the project root
 - Template library: common project types (REST API, HTML tool, Python script) as starter prompts

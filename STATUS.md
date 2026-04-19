@@ -81,6 +81,15 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
+## Phase 7 Checklist — Smart Model Mode
+
+- [ ] 7.1 — Task Classifier (route iterations to haiku / sonnet / opus automatically)
+- [ ] 7.2 — Adaptive Escalation (escalate model when no progress detected)
+- [ ] 7.3 — Cost-Aware Budget Mode (`-budget` flag)
+- [ ] 7.4 — Model Profile Presets (`-modelprofile fast/balanced/quality/auto`)
+
+---
+
 ## Known Issues
 
 - None currently logged.
