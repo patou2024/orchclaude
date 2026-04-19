@@ -18,7 +18,8 @@ param(
     [switch]$v,               # -v             : verbose - show full Claude output
     [string]$d = "",          # -d <path>      : working directory (default: current)
     [switch]$noqa,            # -noqa          : skip QA pass
-    [string]$token = "ORCHESTRATION_COMPLETE"  # custom completion token
+    [string]$token = "ORCHESTRATION_COMPLETE",  # custom completion token
+    [string]$test = ""        # -test <cmd>    : validation command; must exit 0 before run completes
 )
 
 # ---- Help ----
@@ -155,6 +156,7 @@ Write-Log "Timeout   : $timeoutDisplay  ($timeoutSeconds s)" "Cyan"
 Write-Log "Max iters : $i" "Cyan"
 Write-Log "Work dir  : $workDir" "Cyan"
 Write-Log "QA pass   : $(if ($noqa) { 'disabled (-noqa)' } else { 'enabled' })" "Cyan"
+Write-Log "Test gate : $(if ($test) { $test } else { 'none' })" "Cyan"
 Write-Log "Log       : $logFile" "Cyan"
 
 # ================================================================
@@ -163,6 +165,7 @@ Write-Log "Log       : $logFile" "Cyan"
 Write-Banner "PHASE 1 - BUILD" "Yellow"
 
 $completed = $false
+$testFailureContext = ""
 
 for ($iter = 1; $iter -le $i; $iter++) {
 
@@ -191,6 +194,10 @@ Continue from where you left off. Output $token when everything is done.
         $basePrompt + "`n" + $orchestrationInstructions
     }
 
+    if ($testFailureContext) {
+        $fullPrompt = $fullPrompt + "`n" + $testFailureContext
+    }
+
     Write-Log "Calling Claude (build)..." "Yellow"
     $output = Invoke-Claude $fullPrompt "build_$iter"
 
@@ -206,14 +213,51 @@ Continue from where you left off. Output $token when everything is done.
     Add-Content $logFile ""
 
     if ($output -match [regex]::Escape($token)) {
-        $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
-        Write-Banner "Build complete - $iter iteration(s)  |  $buildTime elapsed" "Green"
-        $completed = $true
-        break
-    }
+        if ($test) {
+            Write-Log "Completion token found. Running validation test: $test" "Cyan"
+            $testResult = & cmd /c $test 2>&1
+            $testExitCode = $LASTEXITCODE
+            $testOutput = ($testResult | Select-Object -First 40) -join "`n"
 
-    Write-Log "Token not found. Looping..." "Magenta"
-    Start-Sleep -Seconds 2
+            $ts = (Get-Date).ToString("HH:mm:ss")
+            Add-Content $logFile "[$ts] TEST COMMAND: $test"
+
+            if ($testExitCode -eq 0) {
+                Write-Log "TEST PASSED" "Green"
+                Add-Content $logFile "[$ts] TEST PASSED (exit code 0)"
+                $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
+                Write-Banner "Build complete + TEST PASSED - $iter iteration(s)  |  $buildTime elapsed" "Green"
+                $completed = $true
+                break
+            } else {
+                Write-Log "TEST FAILED (exit code $testExitCode):" "Red"
+                Write-Host $testOutput -ForegroundColor Red
+                Add-Content $logFile "[$ts] TEST FAILED (exit code $testExitCode):"
+                Add-Content $logFile $testOutput
+                Add-Content $logFile ""
+
+                $testFailureContext = @"
+
+## TEST FAILURE - you output $token but the validation test failed. Fix the issues below and try again.
+
+Test command: $test
+Exit code: $testExitCode
+
+Test output:
+$testOutput
+"@
+                Write-Log "Re-running Claude with test failure context..." "Magenta"
+            }
+        } else {
+            $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
+            Write-Banner "Build complete - $iter iteration(s)  |  $buildTime elapsed" "Green"
+            $completed = $true
+            break
+        }
+    } else {
+        Write-Log "Token not found. Looping..." "Magenta"
+        Start-Sleep -Seconds 2
+    }
 }
 
 if (-not $completed) {

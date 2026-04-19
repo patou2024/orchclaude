@@ -90,6 +90,7 @@ orchclaude run -f <file>   -t <timeout>  [options]
 | `-v` | Verbose — print Claude's full output each iteration | off |
 | `-noqa` | Skip the automatic QA pass | off |
 | `-token <word>` | Custom completion token | `ORCHESTRATION_COMPLETE` |
+| `-test <cmd>` | Validation command. Run after each completion claim. Claude only finishes if exit code is 0. If tests fail, Claude is re-run with the failure output attached. | — |
 
 ### Examples
 
@@ -105,6 +106,11 @@ orchclaude run "Add dark mode" -t 45m -d "C:\Projects\MyApp" -v
 
 # Skip QA for quick fixes
 orchclaude run "Fix the typo on the homepage" -t 10m -noqa
+
+# Require tests to pass before completing
+orchclaude run "Add the login feature" -t 1h -test "npm test"
+orchclaude run -f project.md -t 2h -test "pytest"
+orchclaude run "Implement sorting" -t 30m -test "cargo test"
 ```
 
 ---
@@ -173,7 +179,8 @@ Things I may add depending on how I end up using this:
 - Mac / Linux support
 - `--dry-run` flag to preview the prompt before sending
 - Named profiles to save common flag combinations
-- Post-build hook to run your own test script and feed results back to Claude
+- Crash recovery (`orchclaude resume`)
+- Rate limiting and circuit breaker for runaway loops
 - Multi-file project spec with automatic context loading
 
 ---

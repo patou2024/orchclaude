@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 1 — Foundation Hardening
-**Next item to implement:** 1.1 — External Validation Gate (`-test` flag)
+**Next item to implement:** 1.2 — Crash Recovery (`orchclaude resume`)
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -38,7 +38,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 1 Checklist
 
-- [ ] 1.1 — External Validation Gate (`-test` flag)
+- [x] 1.1 — External Validation Gate (`-test` flag)
 - [ ] 1.2 — Crash Recovery (`orchclaude resume`)
 - [ ] 1.3 — Rate Limiting and Circuit Breaker
 - [ ] 1.4 — Token / Cost Estimator
@@ -89,9 +89,11 @@ It is the first thing any new session should read before touching any code.
 
 ## Notes from Last Session
 
-- Initial build and publish session.
-- Core loop, QA phase, and --help all working on Windows 10.
-- Git push works via master:main mapping (local branch is master, remote is main).
+- Implemented 1.1: External Validation Gate (-test flag).
+- After each completion claim, the test command runs via cmd /c.
+- Test failure injects $testFailureContext into the next iteration prompt.
+- Test output capped at 40 lines to keep prompts manageable.
+- Works with npm test, pytest, cargo test, any shell command.
 - em dash characters cause PowerShell parse errors — avoid in script strings, use plain dash.
 - Exit code 1 on git push is a false alarm — git writes remote info to stderr.
 
