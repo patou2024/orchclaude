@@ -9,8 +9,8 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Feature Backlog (see ROADMAP.md)
-**Last session date:** 2026-04-19 (7.4)
+**Next item to implement:** Feature Backlog (see ROADMAP.md) — Phase 7 complete
+**Last session date:** 2026-04-19 (7.1 audit)
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -83,7 +83,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 7 Checklist — Smart Model Mode
 
-- [ ] 7.1 — Task Classifier (route iterations to haiku / sonnet / opus automatically)
+- [x] 7.1 — Task Classifier (route iterations to haiku / sonnet / opus automatically)
 - [x] 7.2 — Adaptive Escalation (escalate model when no progress detected)
 - [x] 7.3 — Cost-Aware Budget Mode (`-budget` flag)
 - [x] 7.4 — Model Profile Presets (`-modelprofile fast/balanced/quality/auto`)
@@ -93,6 +93,17 @@ It is the first thing any new session should read before touching any code.
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (7.1 audit)
+
+- Audited codebase: 7.1 Task Classifier was already fully implemented as infrastructure for 7.2/7.4.
+- `Get-TaskTier` / `get_task_tier` in both PS1 and SH: runs a haiku classifier call on the first 600 chars of the prompt and returns LIGHT / STANDARD / HEAVY.
+- `$script:modelMap` / `MODEL_MAP` maps tiers to model IDs (haiku-4-5, sonnet-4-6, opus-4-7).
+- `MODEL: <label>` line printed and logged per iteration.
+- `-model` flag override fully wired.
+- Phase 7 Checklist is now 100% complete.
 
 ---
 
