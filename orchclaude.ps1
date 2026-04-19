@@ -18,8 +18,7 @@ param(
     [switch]$v,               # -v             : verbose - show full Claude output
     [string]$d = "",          # -d <path>      : working directory (default: current)
     [switch]$noqa,            # -noqa          : skip QA pass
-    [string]$token = "ORCHESTRATION_COMPLETE",  # custom completion token
-    [string]$test = ""        # -test <cmd>    : validation command; must exit 0 before run completes
+    [string]$token = "ORCHESTRATION_COMPLETE"  # custom completion token
 )
 
 # ---- Help ----
@@ -46,6 +45,7 @@ if ($Command -ne "run") {
 $timeoutSeconds = 1800  # default 30m
 if ($t -match "^(\d+)(m|h)$") {
     $num = [int]$Matches[1]
+    if ($num -eq 0) { Write-Error "Bad -t value '$t'. Timeout must be greater than zero."; exit 1 }
     if ($Matches[2] -eq "m") { $timeoutSeconds = $num * 60 }
     else                      { $timeoutSeconds = $num * 3600 }
 } else {
@@ -57,11 +57,18 @@ if ($t -match "^(\d+)(m|h)$") {
 $basePrompt = ""
 if ($f) {
     if (-not (Test-Path $f)) { Write-Error "File not found: $f"; exit 1 }
-    $basePrompt = Get-Content $f -Raw
+    $basePrompt = (Get-Content $f -Raw).Trim()
+    if (-not $basePrompt) { Write-Error "File '$f' is empty. Provide a prompt file with content."; exit 1 }
 } elseif ($Prompt) {
     $basePrompt = $Prompt
 } else {
     Write-Error "Provide a prompt: orchclaude run `"your prompt`" or use -f file.md"
+    exit 1
+}
+
+# ---- Validate max iterations ----
+if ($i -le 0) {
+    Write-Error "Bad -i value '$i'. Must be a positive integer."
     exit 1
 }
 
@@ -72,7 +79,12 @@ if (-not (Test-Path $workDir)) { Write-Error "Directory not found: $workDir"; ex
 # ---- Setup ----
 $logFile      = Join-Path $workDir "orchclaude-log.txt"
 $progressFile = Join-Path $workDir "orchclaude-progress.txt"
-"" | Set-Content $progressFile
+try {
+    "" | Set-Content $progressFile -ErrorAction Stop
+} catch {
+    Write-Error "Cannot write to working directory '$workDir': $_"
+    exit 1
+}
 $startTime = Get-Date
 $timeoutDisplay = $t
 
@@ -91,36 +103,6 @@ $orchestrationInstructions = @"
 
 $qaToken = "QA_COMPLETE"
 
-$qaPrompt = @"
-## QA PHASE - Error Cases and Edge Case Evaluation
-
-The build phase is complete. Your job now is to act as a QA engineer and adversarial tester.
-
-### What to do:
-1. Read every output file that was just produced.
-2. Think through error cases and edge cases - things a normal user or bad input could trigger.
-3. For EACH issue found: fix it directly in the file(s). Do not just report - fix.
-4. Print each finding as: QA_FINDING: <description of issue and fix applied>
-
-### Edge case categories to check (apply what is relevant to the project):
-- Empty input / no input at all
-- Extremely long input (performance, overflow, truncation)
-- Special characters, unicode, emojis in text fields
-- Rapid repeated actions (double-click, spam)
-- localStorage full or unavailable
-- Browser back/forward navigation mid-flow
-- Missing or deleted elements (DOM manipulation)
-- Negative numbers, zero, non-numeric input where numbers expected
-- Dates in the past, far future, invalid formats
-- Network-style failures if any fetch/async code exists
-- State left over from a previous session loading incorrectly
-
-### When done:
-- Summarize all findings in one block: QA_SUMMARY: <n issues found, n fixed>
-- Output exactly this on its own line:
-  $qaToken
-"@
-
 function Write-Log($msg, $color="White") {
     $ts   = (Get-Date).ToString("HH:mm:ss")
     $line = "[$ts] $msg"
@@ -137,14 +119,20 @@ function Write-Banner($text, $color="Cyan") {
 }
 
 function Invoke-Claude($prompt, $iterLabel) {
-    $promptFile = Join-Path $env:TEMP "orchclaude_prompt_$iterLabel.txt"
+    $promptFile = Join-Path $env:TEMP "orchclaude_prompt_${PID}_$iterLabel.txt"
     $prompt | Set-Content $promptFile -Encoding UTF8
 
-    $output = & claude `
-        -p (Get-Content $promptFile -Raw) `
-        --allowedTools "Edit,Bash,Read,Write,Glob,Grep" `
-        --max-turns 50 `
-        2>&1
+    try {
+        $output = & claude `
+            -p (Get-Content $promptFile -Raw) `
+            --allowedTools "Edit,Bash,Read,Write,Glob,Grep" `
+            --max-turns 50 `
+            2>&1
+    } catch [System.Management.Automation.CommandNotFoundException] {
+        Write-Error "'claude' command not found. Is Claude Code installed and in your PATH?"
+        Remove-Item $promptFile -ErrorAction SilentlyContinue
+        exit 1
+    }
 
     Remove-Item $promptFile -ErrorAction SilentlyContinue
     return $output
@@ -156,7 +144,6 @@ Write-Log "Timeout   : $timeoutDisplay  ($timeoutSeconds s)" "Cyan"
 Write-Log "Max iters : $i" "Cyan"
 Write-Log "Work dir  : $workDir" "Cyan"
 Write-Log "QA pass   : $(if ($noqa) { 'disabled (-noqa)' } else { 'enabled' })" "Cyan"
-Write-Log "Test gate : $(if ($test) { $test } else { 'none' })" "Cyan"
 Write-Log "Log       : $logFile" "Cyan"
 
 # ================================================================
@@ -165,7 +152,6 @@ Write-Log "Log       : $logFile" "Cyan"
 Write-Banner "PHASE 1 - BUILD" "Yellow"
 
 $completed = $false
-$testFailureContext = ""
 
 for ($iter = 1; $iter -le $i; $iter++) {
 
@@ -194,10 +180,6 @@ Continue from where you left off. Output $token when everything is done.
         $basePrompt + "`n" + $orchestrationInstructions
     }
 
-    if ($testFailureContext) {
-        $fullPrompt = $fullPrompt + "`n" + $testFailureContext
-    }
-
     Write-Log "Calling Claude (build)..." "Yellow"
     $output = Invoke-Claude $fullPrompt "build_$iter"
 
@@ -213,51 +195,14 @@ Continue from where you left off. Output $token when everything is done.
     Add-Content $logFile ""
 
     if ($output -match [regex]::Escape($token)) {
-        if ($test) {
-            Write-Log "Completion token found. Running validation test: $test" "Cyan"
-            $testResult = & cmd /c $test 2>&1
-            $testExitCode = $LASTEXITCODE
-            $testOutput = ($testResult | Select-Object -First 40) -join "`n"
-
-            $ts = (Get-Date).ToString("HH:mm:ss")
-            Add-Content $logFile "[$ts] TEST COMMAND: $test"
-
-            if ($testExitCode -eq 0) {
-                Write-Log "TEST PASSED" "Green"
-                Add-Content $logFile "[$ts] TEST PASSED (exit code 0)"
-                $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
-                Write-Banner "Build complete + TEST PASSED - $iter iteration(s)  |  $buildTime elapsed" "Green"
-                $completed = $true
-                break
-            } else {
-                Write-Log "TEST FAILED (exit code $testExitCode):" "Red"
-                Write-Host $testOutput -ForegroundColor Red
-                Add-Content $logFile "[$ts] TEST FAILED (exit code $testExitCode):"
-                Add-Content $logFile $testOutput
-                Add-Content $logFile ""
-
-                $testFailureContext = @"
-
-## TEST FAILURE - you output $token but the validation test failed. Fix the issues below and try again.
-
-Test command: $test
-Exit code: $testExitCode
-
-Test output:
-$testOutput
-"@
-                Write-Log "Re-running Claude with test failure context..." "Magenta"
-            }
-        } else {
-            $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
-            Write-Banner "Build complete - $iter iteration(s)  |  $buildTime elapsed" "Green"
-            $completed = $true
-            break
-        }
-    } else {
-        Write-Log "Token not found. Looping..." "Magenta"
-        Start-Sleep -Seconds 2
+        $buildTime = ((Get-Date) - $startTime).ToString("mm\:ss")
+        Write-Banner "Build complete - $iter iteration(s)  |  $buildTime elapsed" "Green"
+        $completed = $true
+        break
     }
+
+    Write-Log "Token not found. Looping..." "Magenta"
+    Start-Sleep -Seconds 2
 }
 
 if (-not $completed) {
@@ -281,6 +226,38 @@ if ($noqa) {
 
     $remaining = [math]::Round(($timeoutSeconds - $elapsed) / 60, 1)
     Write-Log "Running QA pass...  ${remaining}m remaining" "Magenta"
+
+    $qaPrompt = @"
+## QA PHASE - Error Cases and Edge Case Evaluation
+
+The build phase is complete. Working directory: $workDir
+
+Your job now is to act as a QA engineer and adversarial tester.
+
+### What to do:
+1. Read every output file that was just produced in: $workDir
+2. Think through error cases and edge cases - things a normal user or bad input could trigger.
+3. For EACH issue found: fix it directly in the file(s). Do not just report - fix.
+4. Print each finding as: QA_FINDING: <description of issue and fix applied>
+
+### Edge case categories to check (apply what is relevant to the project):
+- Empty input / no input at all
+- Extremely long input (performance, overflow, truncation)
+- Special characters, unicode, emojis in text fields
+- Rapid repeated actions (double-click, spam)
+- localStorage full or unavailable
+- Browser back/forward navigation mid-flow
+- Missing or deleted elements (DOM manipulation)
+- Negative numbers, zero, non-numeric input where numbers expected
+- Dates in the past, far future, invalid formats
+- Network-style failures if any fetch/async code exists
+- State left over from a previous session loading incorrectly
+
+### When done:
+- Summarize all findings in one block: QA_SUMMARY: <n issues found, n fixed>
+- Output exactly this on its own line:
+  $qaToken
+"@
 
     $output = Invoke-Claude $qaPrompt "qa"
 
