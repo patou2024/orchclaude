@@ -7,6 +7,8 @@ After the build, automatically runs a QA pass that checks edge cases and fixes i
 
 ## One-Time Setup
 
+### Windows (PowerShell)
+
 1. Add orchclaude to your PATH (run once in PowerShell):
 
     [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";C:\Users\pana5\bin", "User")
@@ -16,6 +18,25 @@ After the build, automatically runs a QA pass that checks edge cases and fixes i
 2. Allow PowerShell scripts (run once if not already done):
 
     Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+### Linux / macOS
+
+1. Make the script executable and put it on your PATH:
+
+    chmod +x orchclaude.sh
+    sudo cp orchclaude.sh /usr/local/bin/orchclaude
+
+   Or without sudo (user-local):
+
+    mkdir -p "$HOME/.local/bin"
+    cp orchclaude.sh "$HOME/.local/bin/orchclaude"
+    chmod +x "$HOME/.local/bin/orchclaude"
+    # Add to your shell profile if not already there:
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # zsh
+
+2. Requirements: bash 3.2+, python3 (for JSON), git (optional, for worktree isolation).
+   All three are pre-installed on modern macOS and most Linux distributions.
 
 ---
 

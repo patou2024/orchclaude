@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 5.1 — Linux / macOS Port
+**Next item to implement:** 5.2 — Package Distribution (npm)
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -69,7 +69,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 5 Checklist
 
-- [ ] 5.1 — Linux / macOS Port
+- [x] 5.1 — Linux / macOS Port
 - [ ] 5.2 — Package Distribution (npm)
 
 ---
@@ -96,7 +96,21 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
-## Notes from Last Session (4.1)
+## Notes from Last Session (5.1)
+
+- Implemented 5.1: Linux / macOS Port.
+- Wrote `orchclaude.sh` — a full bash equivalent of `orchclaude.ps1` with 100% feature parity.
+- Same flags: -t, -i, -f, -d, -v, -noqa, -token, -cooldown, -breaker, -dryrun, -noplan, -nobranch, -profile, -agents.
+- Same commands: run, resume, status, help, profile (save/list/delete).
+- Same phases: Planning, Parallel Agents, Build Loop (with Context Window Guard + Auto-Commit Checkpoints), QA.
+- ANSI colours replace PowerShell's -ForegroundColor; python3 used for JSON I/O (universally available on Linux/macOS).
+- Parallel agents use bash background subshells (`&`) + temp files; `wait` replaces `Wait-Job`.
+- Profiles stored in `~/.orchclaude/profiles.json` (same concept as Windows `%USERPROFILE%\.orchclaude\profiles.json`).
+- Git worktree isolation works unchanged (same git CLI).
+- Updated README.md with Linux/macOS one-time setup instructions.
+- Phase 5 item 5.1 complete. Next: 5.2 Package Distribution (npm).
+
+## Notes from Previous Session (4.1)
 
 - Implemented 4.1: Parallel Agents.
 - Added `-agents <n>` flag (default: 1, existing behavior unchanged).
