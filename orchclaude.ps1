@@ -27,6 +27,7 @@ param(
     [switch]$noplan,           # -noplan        : skip pre-planning phase
     [switch]$nobranch,         # -nobranch      : skip git worktree isolation (write directly to working dir)
     [string]$profile = "",     # -profile <name>: load a saved profile's flags (CLI flags override)
+    [int]$agents = 1,          # -agents <n>    : run N parallel Claude agents on independent subtasks (default: 1)
     [Parameter(Position=2)]
     [string]$SubArg = ""       # for: orchclaude profile save <name>
 )
@@ -43,7 +44,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -91,6 +92,7 @@ if ($Command -eq "profile") {
             breaker  = $breaker
             noplan   = [bool]$noplan
             nobranch = [bool]$nobranch
+            agents   = $agents
         }
         Save-Profiles $profiles
         Write-Host "Profile '$SubArg' saved to $profilesFile" -ForegroundColor Green
@@ -226,6 +228,21 @@ if ($profile -and -not $resumeMode) {
     if (-not $PSBoundParameters.ContainsKey('breaker'))  { $breaker  = [int]$p.breaker }
     if (-not $PSBoundParameters.ContainsKey('noplan'))   { $noplan   = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
     if (-not $PSBoundParameters.ContainsKey('nobranch')) { $nobranch = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
+    if (-not $PSBoundParameters.ContainsKey('agents'))   { $agents   = if ($p.agents) { [int]$p.agents } else { 1 } }
+}
+
+# ---- Validate agents flag ----
+if ($agents -lt 1) {
+    Write-Error "Bad -agents value '$agents'. Must be a positive integer."
+    exit 1
+}
+if ($agents -gt 1 -and $noplan) {
+    Write-Error "-agents requires the planning phase. Remove -noplan or set -agents 1."
+    exit 1
+}
+if ($agents -gt 1 -and $resumeMode) {
+    Write-Warning "-agents is not supported in resume mode. Running single-agent."
+    $agents = 1
 }
 
 # ---- Require "run" for non-resume/resume/status/help ----
@@ -461,6 +478,7 @@ Write-Log "Breaker   : $(if ($breaker -eq 0) { 'disabled (-breaker 0)' } else { 
 Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (use -noplan to skip)' })" "Cyan"
 Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150k tokens)" "Cyan"
 Write-Log "Worktree  : $(if ($nobranch) { 'disabled (-nobranch)' } elseif ($useWorktree) { "branch $worktreeBranch" } elseif ($isGitRepo) { 'git repo detected but worktree creation failed — writing directly' } else { 'not a git repo — writing directly' })" "Cyan"
+Write-Log "Agents    : $(if ($agents -gt 1) { "$agents parallel agents (independent tasks split from plan)" } else { '1 (sequential, default)' })" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -519,6 +537,305 @@ $basePrompt
     Write-Log "Planning  : using saved plan from previous session ($planFile)" "Blue"
 } elseif ($noplan) {
     Write-Log "Planning phase skipped (-noplan)." "DarkGray"
+}
+
+# ================================================================
+# PARALLEL AGENTS MODE (4.1)
+# ================================================================
+if ($agents -gt 1 -and -not $resumeMode) {
+    Write-Banner "PARALLEL AGENTS MODE  ($agents agents)" "Cyan"
+
+    # Parse plan for independent tasks
+    $allPlanLines      = @(Get-Content $planFile | Where-Object { $_ -match "^\d+" })
+    $independentLines  = @($allPlanLines | Where-Object { $_ -match "depends:\s*none" })
+    $dependentLines    = @($allPlanLines | Where-Object { $_ -match "depends:" -and $_ -notmatch "depends:\s*none" })
+
+    if ($independentLines.Count -eq 0) {
+        Write-Log "No independent tasks (depends: none) found in plan. Falling back to single-agent mode." "Yellow"
+        $agents = 1
+    } else {
+        $numAgents = [math]::Min($agents, $independentLines.Count)
+        if ($numAgents -lt $agents) {
+            Write-Log "Only $($independentLines.Count) independent task(s) found — using $numAgents agent(s)." "Yellow"
+        }
+
+        # Split independent tasks round-robin across agents
+        $agentTaskGroups = @()
+        for ($a = 0; $a -lt $numAgents; $a++) { $agentTaskGroups += ,@() }
+        $tIdx = 0
+        foreach ($task in $independentLines) {
+            $agentTaskGroups[$tIdx % $numAgents] += $task
+            $tIdx++
+        }
+
+        Write-Log "Independent tasks: $($independentLines.Count)  |  Dependent tasks: $($dependentLines.Count)  |  Agents: $numAgents" "Cyan"
+
+        # Spawn one job per agent
+        $agentJobs = @()
+        for ($a = 1; $a -le $numAgents; $a++) {
+            $agentIdx      = $a
+            $agentLogFile  = Join-Path $workDir "orchclaude-log-agent$a.txt"
+            $agentWorkSubDir = Join-Path $workDir "agent-$a"
+
+            "orchclaude parallel agent $a log" | Set-Content $agentLogFile -Encoding UTF8
+            Add-Content $agentLogFile "Started: $(Get-Date)"
+            Add-Content $agentLogFile ""
+
+            if (-not (Test-Path $agentWorkSubDir)) {
+                New-Item -ItemType Directory -Path $agentWorkSubDir -Force | Out-Null
+            }
+
+            $taskListText = ($agentTaskGroups[$a-1] -join "`n")
+
+            $agentFullPrompt = @"
+## PARALLEL AGENT $a of $numAgents
+
+You are one of $numAgents parallel Claude agents working on the same project simultaneously.
+Work ONLY on the subtasks assigned to you below. Do NOT implement tasks assigned to other agents.
+
+## YOUR ASSIGNED SUBTASKS:
+$taskListText
+
+## FULL PROJECT CONTEXT:
+$basePrompt
+
+## YOUR WORKING SUBDIRECTORY:
+Create your output files under: $agentWorkSubDir
+When referencing the project root, use: $workDir
+
+$orchestrationInstructions
+
+Remember: work ONLY on your assigned subtasks above.
+"@
+
+            $job = Start-Job -ScriptBlock {
+                param($prompt, $logFile, $agentIdx, $workSubDir, $tokenStr)
+
+                if (-not (Test-Path $workSubDir)) {
+                    New-Item -ItemType Directory -Path $workSubDir -Force | Out-Null
+                }
+
+                $promptFile = Join-Path $env:TEMP "orchclaude_agent${agentIdx}_$PID.txt"
+                $prompt | Set-Content $promptFile -Encoding UTF8
+
+                try {
+                    $out = & claude `
+                        -p (Get-Content $promptFile -Raw) `
+                        --allowedTools "Edit,Bash,Read,Write,Glob,Grep" `
+                        --max-turns 50 `
+                        2>&1
+                } catch {
+                    $out = "ERROR: claude not found — $($_.Exception.Message)"
+                }
+
+                Remove-Item $promptFile -ErrorAction SilentlyContinue
+
+                Add-Content $logFile "--- Agent $agentIdx Claude output ---"
+                Add-Content $logFile $out
+                Add-Content $logFile ""
+                Add-Content $logFile "Finished: $(Get-Date)"
+
+                return $out
+
+            } -ArgumentList $agentFullPrompt, $agentLogFile, $agentIdx, $agentWorkSubDir, $token
+
+            Write-Log "Agent $a started  |  subtasks: $($agentTaskGroups[$a-1].Count)  |  log: orchclaude-log-agent$a.txt" "Cyan"
+            $agentJobs += [PSCustomObject]@{ Job = $job; AgentIdx = $a; LogFile = $agentLogFile; WorkDir = $agentWorkSubDir }
+        }
+
+        # Wait for all agents
+        Write-Log "Waiting for $($agentJobs.Count) agent(s) to complete..." "Yellow"
+        $agentOutputs = @{}
+        foreach ($jobInfo in $agentJobs) {
+            $elapsed   = ((Get-Date) - $startTime).TotalSeconds
+            $remaining = [math]::Max(10, $timeoutSeconds - $elapsed)
+            $done      = Wait-Job -Job $jobInfo.Job -Timeout $remaining
+            if ($done) {
+                $agentOut = Receive-Job -Job $jobInfo.Job
+                $agentOutputs[$jobInfo.AgentIdx] = $agentOut
+                $totalOutputWords += ([math]::Round(($agentOut -split '\s+' | Where-Object { $_ }).Count))
+                Write-Log "Agent $($jobInfo.AgentIdx) finished." "Green"
+            } else {
+                $agentOutputs[$jobInfo.AgentIdx] = "(AGENT TIMED OUT)"
+                Write-Log "Agent $($jobInfo.AgentIdx) timed out." "Red"
+                Stop-Job -Job $jobInfo.Job
+            }
+            Remove-Job -Job $jobInfo.Job -Force
+        }
+
+        # Log all agent outputs
+        foreach ($idx in ($agentOutputs.Keys | Sort-Object)) {
+            Add-Content $logFile "--- Parallel agent $idx output ---"
+            Add-Content $logFile $agentOutputs[$idx]
+            Add-Content $logFile ""
+        }
+
+        # Build combined summary for merge
+        $agentSummaryBlocks = ""
+        foreach ($idx in ($agentOutputs.Keys | Sort-Object)) {
+            $agentSummaryBlocks += "`n`n=== AGENT $idx OUTPUT ===`n$($agentOutputs[$idx])"
+        }
+
+        $dependentSection = if ($dependentLines.Count -gt 0) {
+            "`n`n## REMAINING DEPENDENT TASKS (not yet done — complete these now):`n$($dependentLines -join "`n")"
+        } else { "" }
+
+        # ---- Merge phase ----
+        $elapsed = ((Get-Date) - $startTime).TotalSeconds
+        if ($elapsed -ge $timeoutSeconds) {
+            Write-Banner "TIMEOUT before merge phase" "Red"
+            Write-Session "timeout" $i
+            Show-CostEstimate
+            Show-WorktreeBranchInfo
+            exit 1
+        }
+
+        Write-Banner "MERGE PHASE" "Cyan"
+        Write-Log "Integrating agent outputs..." "Cyan"
+
+        $mergePrompt = @"
+## MERGE PHASE — Parallel Agent Integration
+
+You are integrating the work of $numAgents parallel agents that each completed different independent subtasks of the same project.
+
+## ORIGINAL TASK:
+$basePrompt
+
+## AGENT OUTPUTS:
+$agentSummaryBlocks
+$dependentSection
+
+## YOUR JOB:
+1. Read all files in $workDir and its agent-* subdirectories.
+2. Integrate each agent's output into the main project under $workDir.
+3. Resolve any conflicts. For conflicts requiring human review, print: CONFLICT: <description>
+4. Complete any remaining dependent tasks listed above (they depend on the agents' work).
+5. Verify the integrated result is coherent and complete.
+6. When done, output exactly: $token
+"@
+
+        $totalInputWords += ([math]::Round(($mergePrompt -split '\s+' | Where-Object { $_ }).Count))
+        Write-Log "Calling Claude (merge)..." "Cyan"
+        $mergeOutput = Invoke-Claude $mergePrompt "merge"
+        $totalOutputWords += ([math]::Round(($mergeOutput -split '\s+' | Where-Object { $_ }).Count))
+
+        if ($v) { Write-Host $mergeOutput }
+
+        ($mergeOutput -split "`n") | Where-Object { $_ -match "^CONFLICT:" } | ForEach-Object {
+            Write-Log $_ "Red"
+        }
+        ($mergeOutput -split "`n") | Where-Object { $_ -match "^PROGRESS:" } | ForEach-Object {
+            Add-Content $progressFile $_
+            Write-Log $_ "Green"
+        }
+
+        Add-Content $logFile "--- Merge phase ---"
+        Add-Content $logFile $mergeOutput
+        Add-Content $logFile ""
+
+        if ($mergeOutput -match [regex]::Escape($token)) {
+            Write-Banner "Parallel build complete — agents merged" "Green"
+            $completed = $true
+            Write-Session "complete" $i
+        } else {
+            Write-Banner "Merge phase did not produce completion token — check log" "Red"
+            Write-Session "timeout" $i
+            Show-CostEstimate
+            Show-WorktreeBranchInfo
+            exit 1
+        }
+
+        # Skip the regular build loop by jumping to QA
+        if (-not $noqa) {
+            Write-Banner "PHASE 2 - QA + EDGE CASE EVALUATION" "Magenta"
+            $elapsed = ((Get-Date) - $startTime).TotalSeconds
+            if ($elapsed -ge $timeoutSeconds) {
+                Write-Session "timeout" $i
+                Write-Banner "TIMEOUT before QA phase could run" "Red"
+                Show-CostEstimate
+                Show-WorktreeBranchInfo
+                exit 1
+            }
+            $remaining = [math]::Round(($timeoutSeconds - $elapsed) / 60, 1)
+            Write-Log "Running QA pass...  ${remaining}m remaining" "Magenta"
+
+            $qaPrompt = @"
+## QA PHASE - Error Cases and Edge Case Evaluation
+
+The build phase is complete. Working directory: $workDir
+
+Your job now is to act as a QA engineer and adversarial tester.
+
+### What to do:
+1. Read every output file that was just produced in: $workDir
+2. Think through error cases and edge cases - things a normal user or bad input could trigger.
+3. For EACH issue found: fix it directly in the file(s). Do not just report - fix.
+4. Print each finding as: QA_FINDING: <description of issue and fix applied>
+
+### Edge case categories to check (apply what is relevant to the project):
+- Empty input / no input at all
+- Extremely long input (performance, overflow, truncation)
+- Special characters, unicode, emojis in text fields
+- Rapid repeated actions (double-click, spam)
+- localStorage full or unavailable
+- Browser back/forward navigation mid-flow
+- Missing or deleted elements (DOM manipulation)
+- Negative numbers, zero, non-numeric input where numbers expected
+- Dates in the past, far future, invalid formats
+- Network-style failures if any fetch/async code exists
+- State left over from a previous session loading incorrectly
+
+### When done:
+- Summarize all findings in one block: QA_SUMMARY: <n issues found, n fixed>
+- Output exactly this on its own line:
+  $qaToken
+"@
+            $totalInputWords += ([math]::Round(($qaPrompt -split '\s+' | Where-Object { $_ }).Count))
+            $qaOut = Invoke-Claude $qaPrompt "qa_parallel"
+            $totalOutputWords += ([math]::Round(($qaOut -split '\s+' | Where-Object { $_ }).Count))
+
+            if ($v) { Write-Host $qaOut }
+            ($qaOut -split "`n") | Where-Object { $_ -match "^QA_FINDING:" }  | ForEach-Object { Write-Log $_ "DarkYellow" }
+            ($qaOut -split "`n") | Where-Object { $_ -match "^QA_SUMMARY:" }  | ForEach-Object { Write-Log $_ "Cyan" }
+            Add-Content $logFile "--- QA pass (parallel mode) ---"
+            Add-Content $logFile $qaOut
+            Add-Content $logFile ""
+            if ($qaOut -match [regex]::Escape($qaToken)) {
+                Write-Log "QA pass complete." "Green"
+            } else {
+                Write-Log "QA pass did not output $qaToken - check log for details." "Red"
+            }
+        } else {
+            Write-Banner "QA skipped (-noqa flag)" "DarkGray"
+        }
+
+        Write-Session "complete" $i
+        $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
+        Show-CostEstimate
+        Write-Banner "ALL DONE  |  $totalTime total" "Green"
+
+        if ($useWorktree) {
+            Write-Host ""
+            $mergeChoice = Read-Host "Merge branch '$worktreeBranch' into '$originalBranch'? (y/n)"
+            if ($mergeChoice -ieq "y") {
+                Write-Log "Removing worktree and merging $worktreeBranch into $originalBranch..." "Cyan"
+                & git -C $originalWorkDir worktree remove $worktreePath --force 2>&1 | Out-Null
+                $mergeResult = & git -C $originalWorkDir merge $worktreeBranch --no-ff -m "orchclaude: merge $worktreeBranch" 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Log "Merge complete. Branch '$worktreeBranch' merged into '$originalBranch'." "Green"
+                    & git -C $originalWorkDir branch -d $worktreeBranch 2>&1 | Out-Null
+                } else {
+                    Write-Log "Merge failed: $mergeResult" "Red"
+                    Write-Log "Branch '$worktreeBranch' preserved. Merge manually: git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
+                }
+            } else {
+                Write-Log "Merge skipped. Branch '$worktreeBranch' preserved." "Yellow"
+                Write-Log "To merge later: git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
+                & git -C $originalWorkDir worktree remove $worktreePath --force 2>&1 | Out-Null
+            }
+        }
+        exit 0
+    }
 }
 
 # ================================================================

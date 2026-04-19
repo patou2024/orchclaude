@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 4.1 — Parallel Agents
+**Next item to implement:** 5.1 — Linux / macOS Port
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -63,7 +63,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 4 Checklist
 
-- [ ] 4.1 — Parallel Agents
+- [x] 4.1 — Parallel Agents
 
 ---
 
@@ -96,7 +96,23 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
-## Notes from Last Session
+## Notes from Last Session (4.1)
+
+- Implemented 4.1: Parallel Agents.
+- Added `-agents <n>` flag (default: 1, existing behavior unchanged).
+- Errors if `-agents > 1` combined with `-noplan` (planning required for task splitting).
+- After the plan phase, parses `depends: none` tasks from the plan file.
+- Splits independent tasks round-robin across N agents (caps at number of independent tasks).
+- Each agent: `Start-Job` PowerShell background job, own log `orchclaude-log-agentN.txt`, own subdir `agent-N/`.
+- Agent job is self-contained: defines its own claude call, writes its log, returns output.
+- Orchestrator waits for all jobs (`Wait-Job` with remaining timeout), then runs a merge Claude call.
+- Merge phase: feeds all agent outputs + any dependent tasks to Claude, asks it to integrate into `$workDir`.
+- CONFLICT lines flagged in Red; PROGRESS lines appended to progress log.
+- If merge produces completion token: QA + git merge prompt run as normal, then `exit 0`.
+- Falls back to single-agent if no `depends: none` tasks found.
+- Phase 4 is now fully complete. Next: 5.1 Linux/macOS Port.
+
+## Notes from Last Session (3.2)
 
 - Implemented 3.2: Auto-Commit Checkpoints.
 - After each build iteration where new PROGRESS lines appear, checks `git status --porcelain` in the worktree.
