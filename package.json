@@ -14,6 +14,7 @@
     "orchclaude.ps1",
     "orchclaude.sh",
     "orchclaude.cmd",
+    "dashboard.html",
     "README.md"
   ],
   "engines": {

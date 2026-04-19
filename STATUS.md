@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 6.1 — Status Dashboard
+**Next item to implement:** 6.2 — Log Viewer
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -76,7 +76,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 6 Checklist
 
-- [ ] 6.1 — Status Dashboard
+- [x] 6.1 — Status Dashboard
 - [ ] 6.2 — Log Viewer
 
 ---
@@ -96,7 +96,25 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
-## Notes from Last Session (5.2)
+## Notes from Last Session (6.1)
+
+- Implemented 6.1: Status Dashboard.
+- Created `dashboard.html`: standalone dark-theme HTML dashboard with no external dependencies.
+  - Fetches `/api/session` and `/api/log` every 3 seconds via JavaScript polling.
+  - Shows: status badge (running/complete/timeout), iteration progress bar, elapsed/remaining time, progress lines list, task preview, and color-coded log viewer.
+  - PROGRESS lines → green, QA_FINDING → yellow, errors → red, banners → blue.
+  - Live indicator dot with pulse animation shows connection state.
+- Added `orchclaude dashboard` command to `orchclaude.ps1`.
+  - Starts a PS HttpListener on port 7890 (no admin required for localhost).
+  - Serves: `GET /` → dashboard.html, `GET /api/session` → orchclaude-session.json, `GET /api/log` → last 200 lines of orchclaude-log.txt.
+  - Uses `BeginGetContext` + 100ms poll loop so Ctrl+C exits cleanly.
+  - Opens browser automatically via `Start-Process`.
+  - Accepts `-d <path>` to point at a different work directory.
+- Added `dashboard.html` to `files` array in `package.json` so npm installs it alongside the scripts.
+- Updated help text and unknown-command error message to include `dashboard`.
+- Phase 6 item 6.1 complete. Next: 6.2 Log Viewer.
+
+## Notes from Previous Session (5.2)
 
 - Implemented 5.2: Package Distribution (npm).
 - Created `package.json`: name `orchclaude`, version 0.1.0, `bin` field points to `bin/orchclaude.js`, `postinstall` runs `scripts/postinstall.js`, `files` includes only the scripts and bin/scripts dirs.

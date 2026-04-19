@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>orchclaude dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  h1 { font-size: 18px; color: #58a6ff; font-weight: bold; letter-spacing: 0.5px; }
+  .live-row { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; animation: pulse 2s infinite; }
+  .dot.dead { background: #f85149; animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  #live-label { font-size: 12px; color: #8b949e; }
+  #last-refresh { font-size: 11px; color: #484f58; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #484f58;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #21262d;
+  }
+  .status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 14px;
+  }
+  .s-running  { background: #1f6feb; color: #cae8ff; }
+  .s-complete { background: #1a7f37; color: #aff5b4; }
+  .s-timeout  { background: #da3633; color: #ffdcd7; }
+  .s-unknown  { background: #30363d; color: #8b949e; }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid #21262d;
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: #8b949e; font-size: 13px; }
+  .stat-value { color: #e6edf3; font-weight: bold; font-size: 13px; }
+  .bar-wrap { background: #21262d; border-radius: 4px; height: 6px; margin-top: 10px; overflow: hidden; }
+  .bar { height: 100%; background: #1f6feb; border-radius: 4px; transition: width 0.6s ease; }
+  .bar.complete { background: #1a7f37; }
+  .progress-list { max-height: 220px; overflow-y: auto; }
+  .progress-item {
+    padding: 5px 0;
+    color: #3fb950;
+    font-size: 13px;
+    border-bottom: 1px solid #21262d;
+    line-height: 1.4;
+  }
+  .progress-item:last-child { border-bottom: none; color: #56d364; }
+  .progress-item::before { content: "● "; opacity: 0.7; }
+  .empty-note { color: #484f58; font-size: 13px; padding: 4px 0; }
+  .task-preview {
+    color: #e6edf3;
+    white-space: pre-wrap;
+    max-height: 80px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .log-wrap {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+  }
+  .log-wrap h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #484f58;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #21262d;
+  }
+  #log-content {
+    font-size: 12px;
+    line-height: 1.7;
+    max-height: 380px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .ll { display: block; }
+  .lp { color: #3fb950; }
+  .lq { color: #e3b341; }
+  .le { color: #f85149; }
+  .lb { color: #58a6ff; }
+  .ld { color: #484f58; }
+  .no-session { text-align: center; padding: 48px 20px; color: #484f58; }
+  .no-session h2 { color: #58a6ff; font-size: 20px; margin-bottom: 10px; }
+  .no-session code { background: #21262d; padding: 2px 6px; border-radius: 4px; color: #e6edf3; }
+  footer { text-align: center; color: #30363d; font-size: 11px; margin-top: 20px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#x26A1; orchclaude dashboard</h1>
+  <div class="live-row">
+    <div class="dot" id="live-dot"></div>
+    <span id="live-label">connecting&#8230;</span>
+    <span id="last-refresh"></span>
+  </div>
+</header>
+
+<div id="main-content">
+  <div class="no-session"><h2>Loading&#8230;</h2><p>Connecting to session data</p></div>
+</div>
+
+<div class="log-wrap" id="log-section" style="display:none">
+  <h2>Recent Log</h2>
+  <div id="log-content"></div>
+</div>
+
+<footer>orchclaude dashboard &mdash; refreshes every 3s &mdash; stop server with Ctrl+C in terminal</footer>
+
+<script>
+function esc(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function fmtTime(iso) {
+  if (!iso) return 'N/A';
+  const d = new Date(iso);
+  return d.toLocaleTimeString() + ' ' + d.toLocaleDateString();
+}
+
+function parseMins(flagT) {
+  if (!flagT) return null;
+  const m = String(flagT).match(/^(\d+)(m|h)$/);
+  if (!m) return null;
+  return m[2] === 'h' ? parseInt(m[1]) * 60 : parseInt(m[1]);
+}
+
+function sClass(s) {
+  return {running:'s-running', complete:'s-complete', timeout:'s-timeout'}[s] || 's-unknown';
+}
+
+function colorLine(line) {
+  if (/PROGRESS:/.test(line))                    return 'll lp';
+  if (/QA_FINDING:|QA_SUMMARY:/.test(line))      return 'll lq';
+  if (/ERROR|CIRCUIT BREAKER|TIMEOUT|failed/i.test(line)) return 'll le';
+  if (/={3,}|PHASE|PLANNING|MERGE|ALL DONE|PARALLEL/i.test(line)) return 'll lb';
+  return 'll ld';
+}
+
+async function refresh() {
+  try {
+    const [sr, lr] = await Promise.all([fetch('/api/session'), fetch('/api/log')]);
+    if (!sr.ok) throw new Error('no session');
+    const sess = await sr.json();
+    const log  = lr.ok ? await lr.text() : '(no log)';
+
+    document.getElementById('live-dot').className = 'dot';
+    document.getElementById('live-label').textContent = 'Live';
+    document.getElementById('last-refresh').textContent = '\u00a0\u00a0refreshed ' + new Date().toLocaleTimeString();
+
+    renderSession(sess);
+    renderLog(log);
+  } catch {
+    document.getElementById('live-dot').className = 'dot dead';
+    document.getElementById('live-label').textContent = 'Disconnected';
+  }
+}
+
+function renderSession(sess) {
+  if (!sess || !sess.status) {
+    document.getElementById('main-content').innerHTML =
+      '<div class="no-session"><h2>No Active Session</h2>' +
+      '<p>Start a run: <code>orchclaude run "your task" -t 30m</code></p></div>';
+    return;
+  }
+
+  const toMin   = parseMins(sess.flags && sess.flags.t);
+  const elapsed = sess.startTime ? (Date.now() - new Date(sess.startTime)) / 60000 : 0;
+  const remain  = toMin ? Math.max(0, toMin - elapsed) : null;
+  const maxI    = (sess.flags && sess.flags.i) || '?';
+  const curI    = sess.currentIteration || 0;
+  const pct     = (maxI !== '?') ? Math.min(100, Math.round(curI / maxI * 100)) : 0;
+  const isComplete = sess.status === 'complete';
+
+  const prog = Array.isArray(sess.progressLines) ? sess.progressLines : [];
+  const progHtml = prog.length
+    ? prog.map(l => `<div class="progress-item">${esc(l.replace(/^PROGRESS:\s*/,''))}</div>`).join('')
+    : '<div class="empty-note">No progress lines yet</div>';
+
+  const taskHtml = sess.prompt
+    ? `<div class="card" style="margin-bottom:0">
+         <h2>Task</h2>
+         <div class="task-preview">${esc(sess.prompt.substring(0,600))}${sess.prompt.length>600?'\u2026':''}</div>
+       </div>`
+    : '';
+
+  document.getElementById('main-content').innerHTML = `
+    <div class="grid">
+      <div class="card">
+        <h2>Session Status</h2>
+        <div class="status-badge ${sClass(sess.status)}">${sess.status}</div>
+        <div class="stat-row"><span class="stat-label">Started</span><span class="stat-value">${fmtTime(sess.startTime)}</span></div>
+        <div class="stat-row"><span class="stat-label">Last update</span><span class="stat-value">${fmtTime(sess.lastUpdated)}</span></div>
+        <div class="stat-row"><span class="stat-label">Elapsed</span><span class="stat-value">${elapsed.toFixed(1)}m${remain !== null ? ' / ' + remain.toFixed(1) + 'm left' : ''}</span></div>
+        <div class="stat-row"><span class="stat-label">Timeout flag</span><span class="stat-value">${(sess.flags&&sess.flags.t)||'N/A'}</span></div>
+      </div>
+      <div class="card">
+        <h2>Iteration Progress</h2>
+        <div class="stat-row"><span class="stat-label">Iteration</span><span class="stat-value">${curI} / ${maxI}</span></div>
+        <div class="bar-wrap"><div class="bar${isComplete?' complete':''}" style="width:${pct}%"></div></div>
+        <div style="height:12px"></div>
+        <div class="stat-row"><span class="stat-label">Progress lines</span><span class="stat-value">${prog.length}</span></div>
+        <div class="stat-row"><span class="stat-label">QA pass</span><span class="stat-value">${(sess.flags&&sess.flags.noqa)?'disabled':'enabled'}</span></div>
+        <div class="stat-row"><span class="stat-label">Cooldown</span><span class="stat-value">${(sess.flags&&sess.flags.cooldown!=null)?sess.flags.cooldown+'s':'N/A'}</span></div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <h2>Progress Lines</h2>
+      <div class="progress-list">${progHtml}</div>
+    </div>
+    ${taskHtml}
+  `;
+}
+
+function renderLog(logText) {
+  document.getElementById('log-section').style.display = 'block';
+  const el = document.getElementById('log-content');
+  const lines = logText.split('\n');
+  el.innerHTML = lines.map(l => `<span class="${colorLine(l)}">${esc(l)}</span>`).join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

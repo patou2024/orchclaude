@@ -44,6 +44,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
+        Write-Host "  Commands: run, resume, status, dashboard, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -172,6 +173,94 @@ if ($Command -eq "status") {
     exit 0
 }
 
+# ---- Dashboard command ----
+if ($Command -eq "dashboard") {
+    $workDir     = if ($d) { $d } else { (Get-Location).Path }
+    $sessionFile = Join-Path $workDir "orchclaude-session.json"
+    $logFile     = Join-Path $workDir "orchclaude-log.txt"
+    $dashHtml    = Join-Path $PSScriptRoot "dashboard.html"
+
+    if (-not (Test-Path $dashHtml)) {
+        Write-Error "dashboard.html not found at $dashHtml — reinstall orchclaude or run from the source directory."
+        exit 1
+    }
+
+    $port    = 7890
+    $baseUrl = "http://localhost:$port/"
+    $listener = [System.Net.HttpListener]::new()
+    $listener.Prefixes.Add($baseUrl)
+
+    try {
+        $listener.Start()
+    } catch {
+        Write-Error "Could not start HTTP server on port $port. Is another process using it?`nError: $_"
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host ("=" * 50) -ForegroundColor Cyan
+    Write-Host "  orchclaude dashboard" -ForegroundColor Cyan
+    Write-Host ("=" * 50) -ForegroundColor Cyan
+    Write-Host "  URL     : $baseUrl" -ForegroundColor Green
+    Write-Host "  Session : $sessionFile" -ForegroundColor DarkGray
+    Write-Host "  Log     : $logFile" -ForegroundColor DarkGray
+    Write-Host "  Stop    : Ctrl+C" -ForegroundColor Yellow
+    Write-Host ("=" * 50) -ForegroundColor Cyan
+    Write-Host ""
+
+    Start-Process $baseUrl
+
+    try {
+        while ($listener.IsListening) {
+            $async = $listener.BeginGetContext($null, $null)
+            while (-not $async.IsCompleted) {
+                Start-Sleep -Milliseconds 100
+            }
+            if (-not $listener.IsListening) { break }
+
+            $ctx  = $listener.EndGetContext($async)
+            $req  = $ctx.Request
+            $resp = $ctx.Response
+            $path = $req.Url.AbsolutePath
+
+            try {
+                if ($path -eq "/" -or $path -eq "/index.html") {
+                    $bytes = [System.IO.File]::ReadAllBytes($dashHtml)
+                    $resp.ContentType     = "text/html; charset=utf-8"
+                    $resp.ContentLength64 = $bytes.Length
+                    $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+                elseif ($path -eq "/api/session") {
+                    $json  = if (Test-Path $sessionFile) { Get-Content $sessionFile -Raw } else { '{"status":"no session"}' }
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+                    $resp.ContentType     = "application/json; charset=utf-8"
+                    $resp.ContentLength64 = $bytes.Length
+                    $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+                elseif ($path -eq "/api/log") {
+                    $log   = if (Test-Path $logFile) { (Get-Content $logFile -Tail 200) -join "`n" } else { "(no log yet)" }
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($log)
+                    $resp.ContentType     = "text/plain; charset=utf-8"
+                    $resp.ContentLength64 = $bytes.Length
+                    $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+                else {
+                    $resp.StatusCode      = 404
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes("Not found")
+                    $resp.ContentLength64 = $bytes.Length
+                    $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+            } finally {
+                try { $resp.OutputStream.Close() } catch {}
+            }
+        }
+    } finally {
+        try { $listener.Stop() } catch {}
+        Write-Host "Dashboard stopped." -ForegroundColor DarkGray
+    }
+    exit 0
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -247,7 +336,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude help, orchclaude profile"
     exit 1
 }
 
