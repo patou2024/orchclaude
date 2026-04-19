@@ -301,6 +301,7 @@ Write-Log "QA pass   : $(if ($noqa) { 'disabled (-noqa)' } else { 'enabled' })" 
 Write-Log "Cooldown  : $(if ($cooldown -eq 0) { 'disabled (-cooldown 0)' } else { "${cooldown}s between iterations" })" "Cyan"
 Write-Log "Breaker   : $(if ($breaker -eq 0) { 'disabled (-breaker 0)' } else { "fires after ${breaker} stalled iterations" })" "Cyan"
 Write-Log "Planning  : $(if ($noplan) { 'disabled (-noplan)' } else { 'enabled (use -noplan to skip)' })" "Cyan"
+Write-Log "Ctx guard : enabled (compresses progress log when prompt exceeds ~150k tokens)" "Cyan"
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
     Write-Log "Resuming  : starting at iteration $startIter" "Cyan"
@@ -401,6 +402,43 @@ Continue from where you left off. Output $token when everything is done.
 "@
     } else {
         "${planSection}${basePrompt}`n${orchestrationInstructions}"
+    }
+
+    # ---- Context Window Guard ----
+    $estimatedTokens = [math]::Round((Get-WordCount $fullPrompt) * 1.33)
+    if ($estimatedTokens -gt 150000 -and $priorProgress) {
+        Write-Log "CONTEXT GUARD: prompt is ~$estimatedTokens tokens — compressing progress log..." "DarkYellow"
+
+        $compressionPrompt = "Summarize these progress notes in 10 concise bullet points. Output only the bullet points, no preamble, no explanation:`n`n$priorProgress"
+        $totalInputWords += Get-WordCount $compressionPrompt
+        $compressedRaw = Invoke-Claude $compressionPrompt "compress_$iter"
+        $totalOutputWords += Get-WordCount $compressedRaw
+
+        $compressedLines = @($compressedRaw -split "`n" | Where-Object { $_ -match "\S" })
+        if ($compressedLines.Count -gt 0) {
+            $compressedRaw.Trim() | Set-Content $progressFile -Encoding UTF8
+            Write-Log "CONTEXT GUARD: progress compressed to $($compressedLines.Count) lines. Continuing." "DarkYellow"
+            Add-Content $logFile "--- Context Guard compression at iteration $iter ---"
+            Add-Content $logFile $compressedRaw
+            Add-Content $logFile ""
+
+            # Rebuild fullPrompt with compressed progress
+            $priorProgress = (Get-Content $progressFile -Raw).Trim()
+            $fullPrompt = if ($priorProgress) {
+@"
+${planSection}$basePrompt
+$orchestrationInstructions
+## PRIOR PROGRESS (completed in earlier iterations - do not redo):
+$priorProgress
+
+Continue from where you left off. Output $token when everything is done.
+"@
+            } else {
+                "${planSection}${basePrompt}`n${orchestrationInstructions}"
+            }
+        } else {
+            Write-Log "CONTEXT GUARD: compression returned empty result — continuing with original." "Red"
+        }
     }
 
     Write-Log "Calling Claude (build)..." "Yellow"
