@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Support for .orchclauderc config file in the project root (see Feature Backlog)
+**Next item to implement:** Template library: common project types (REST API, HTML tool, Python script) as starter prompts (see Feature Backlog)
 **Last session date:** 2026-04-20
 **Windows stable:** yes
 **Cross-platform:** no
@@ -96,7 +96,7 @@ It is the first thing any new session should read before touching any code.
 - [x] `orchclaude explain` — runs Claude in read-only mode and asks it to explain what it built
 - [x] `orchclaude diff` — shows a clean diff of everything changed in the last run
 - [x] Slack / Discord webhook notification when a run completes
-- [ ] Support for .orchclauderc config file in the project root
+- [x] Support for .orchclauderc config file in the project root
 - [ ] Template library: common project types (REST API, HTML tool, Python script) as starter prompts
 
 ---
@@ -104,6 +104,21 @@ It is the first thing any new session should read before touching any code.
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (.orchclauderc)
+
+- Implemented Feature Backlog item: Support for `.orchclauderc` config file in the project root.
+- `.orchclauderc` is a JSON file placed in the working directory that sets default flag values for all `orchclaude run` invocations in that directory.
+- Priority order: CLI flags > named profile (`-profile`) > `.orchclauderc` > built-in defaults.
+- Supports every run flag: `t, i, v, noqa, token, cooldown, breaker, noplan, nobranch, agents, webhook, model, budget, modelprofile, autowait, autoschedule, waittime`.
+- Not loaded in resume mode (flags are already locked in the session file).
+- Changes applied to both `orchclaude.ps1` and `orchclaude.sh` with feature parity.
+- PS1 side uses `$PSBoundParameters` to detect CLI-set flags accurately.
+- SH side introduces `_CLI_*` tracking variables (set to `true` when a flag is explicitly passed on the command line). Profile loading was updated to use these tracking vars instead of default-value comparisons, giving correct `CLI > profile > RC` semantics.
+- The 7.4 Model Profile Presets block was moved in both scripts to run AFTER RC and profile loading, so that `modelprofile` set via `.orchclauderc` or a named profile is correctly processed.
+- Banner shows `RC file   : <path>` when an `.orchclauderc` is loaded.
 
 ---
 

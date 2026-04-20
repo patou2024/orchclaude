@@ -39,21 +39,6 @@ param(
     [string]$webhook = ""       # -webhook <url>  : POST a JSON summary to this URL when the run finishes (Slack/Discord/generic)
 )
 
-# ---- 7.4: Model Profile Presets ----
-$noEscalation = $false
-if ($modelprofile -ne "") {
-    switch ($modelprofile.ToLower()) {
-        "fast"     { if (-not $model) { $model = "light"  } }
-        "quality"  { if (-not $model) { $model = "heavy"  } }
-        "balanced" { $noEscalation = $true }
-        "auto"     { }   # classifier + escalation (default)
-        default    {
-            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
-            exit 1
-        }
-    }
-}
-
 # ---- Help ----
 if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
     $guideFile = "C:\Users\pana5\ORCHCLAUDE-GUIDE.md"
@@ -617,7 +602,37 @@ if ($Command -eq "resume") {
     $resumeMode = $true
 }
 
-# ---- Load named profile (CLI flags take precedence) ----
+# ---- Load .orchclauderc from project root (profile overrides RC; CLI overrides both) ----
+$rcDir    = if ($d) { $d } else { (Get-Location).Path }
+$rcFile   = Join-Path $rcDir ".orchclauderc"
+$rcLoaded = $false
+if ((Test-Path $rcFile) -and -not $resumeMode) {
+    try {
+        $rc = Get-Content $rcFile -Raw | ConvertFrom-Json
+        if (-not $PSBoundParameters.ContainsKey('t'))            { if ($null -ne $rc.t)            { $t            = "$($rc.t)"                                                             } }
+        if (-not $PSBoundParameters.ContainsKey('i'))            { if ($null -ne $rc.i)            { $i            = [int]$rc.i                                                              } }
+        if (-not $PSBoundParameters.ContainsKey('v'))            { if ($null -ne $rc.v)            { $v            = [System.Management.Automation.SwitchParameter][bool]$rc.v              } }
+        if (-not $PSBoundParameters.ContainsKey('noqa'))         { if ($null -ne $rc.noqa)         { $noqa         = [System.Management.Automation.SwitchParameter][bool]$rc.noqa           } }
+        if (-not $PSBoundParameters.ContainsKey('token'))        { if ($null -ne $rc.token)        { $token        = "$($rc.token)"                                                         } }
+        if (-not $PSBoundParameters.ContainsKey('cooldown'))     { if ($null -ne $rc.cooldown)     { $cooldown     = [int]$rc.cooldown                                                      } }
+        if (-not $PSBoundParameters.ContainsKey('breaker'))      { if ($null -ne $rc.breaker)      { $breaker      = [int]$rc.breaker                                                       } }
+        if (-not $PSBoundParameters.ContainsKey('noplan'))       { if ($null -ne $rc.noplan)       { $noplan       = [System.Management.Automation.SwitchParameter][bool]$rc.noplan         } }
+        if (-not $PSBoundParameters.ContainsKey('nobranch'))     { if ($null -ne $rc.nobranch)     { $nobranch     = [System.Management.Automation.SwitchParameter][bool]$rc.nobranch       } }
+        if (-not $PSBoundParameters.ContainsKey('agents'))       { if ($null -ne $rc.agents)       { $agents       = [int]$rc.agents                                                        } }
+        if (-not $PSBoundParameters.ContainsKey('webhook'))      { if ($null -ne $rc.webhook)      { $webhook      = "$($rc.webhook)"                                                       } }
+        if (-not $PSBoundParameters.ContainsKey('model'))        { if ($null -ne $rc.model)        { $model        = "$($rc.model)"                                                         } }
+        if (-not $PSBoundParameters.ContainsKey('budget'))       { if ($null -ne $rc.budget)       { $budget       = [double]$rc.budget                                                     } }
+        if (-not $PSBoundParameters.ContainsKey('modelprofile')) { if ($null -ne $rc.modelprofile) { $modelprofile = "$($rc.modelprofile)"                                                  } }
+        if (-not $PSBoundParameters.ContainsKey('autowait'))     { if ($null -ne $rc.autowait)     { $autowait     = [System.Management.Automation.SwitchParameter][bool]$rc.autowait       } }
+        if (-not $PSBoundParameters.ContainsKey('autoschedule')) { if ($null -ne $rc.autoschedule) { $autoschedule = [System.Management.Automation.SwitchParameter][bool]$rc.autoschedule   } }
+        if (-not $PSBoundParameters.ContainsKey('waittime'))     { if ($null -ne $rc.waittime)     { $waittime     = [int]$rc.waittime                                                      } }
+        $rcLoaded = $true
+    } catch {
+        Write-Warning ".orchclauderc parse error: $_"
+    }
+}
+
+# ---- Load named profile (CLI flags take precedence; profile overrides .orchclauderc) ----
 if ($profile -and -not $resumeMode) {
     $profiles = Get-Profiles
     if (-not $profiles.ContainsKey($profile)) {
@@ -637,6 +652,21 @@ if ($profile -and -not $resumeMode) {
     if (-not $PSBoundParameters.ContainsKey('nobranch')) { $nobranch = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
     if (-not $PSBoundParameters.ContainsKey('agents'))   { $agents   = if ($p.agents) { [int]$p.agents } else { 1 } }
     if (-not $PSBoundParameters.ContainsKey('webhook'))  { $webhook  = if ($p.webhook) { "$($p.webhook)" } else { "" } }
+}
+
+# ---- 7.4: Model Profile Presets (evaluated after RC + profile so all sources are resolved) ----
+$noEscalation = $false
+if ($modelprofile -ne "") {
+    switch ($modelprofile.ToLower()) {
+        "fast"     { if (-not $model) { $model = "light"  } }
+        "quality"  { if (-not $model) { $model = "heavy"  } }
+        "balanced" { $noEscalation = $true }
+        "auto"     { }
+        default    {
+            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
 # ---- Validate agents flag ----
@@ -1149,6 +1179,7 @@ Write-Log "Budget    : $(if ($budget -gt 0) { "`$$budget limit ÔÇö pause and 
 $usageLimitMode = if ($autowait) { "autowait (sleep in-process, $waittime min wait)" } elseif ($autoschedule) { "autoschedule (schtasks entry, $waittime min wait)" } else { "manual resume (orchclaude resume)" }
 Write-Log "UsageLimit: $usageLimitMode" "Cyan"
 Write-Log "Webhook   : $(if ($webhook) { "$webhook (Slack/Discord/generic JSON on run end)" } else { 'disabled (use -webhook <url> to notify on completion)' })" "Cyan"
+if ($rcLoaded) { Write-Log "RC file   : $rcFile" "Cyan" }
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {

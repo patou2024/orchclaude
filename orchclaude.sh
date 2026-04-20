@@ -449,29 +449,36 @@ AUTOSCHEDULE=false
 WAITTIME=300
 WEBHOOK_URL=""
 
+# CLI tracking: true when flag was explicitly passed on command line
+_CLI_T=false; _CLI_I=false; _CLI_V=false; _CLI_D=false; _CLI_NOQA=false
+_CLI_TOKEN=false; _CLI_COOLDOWN=false; _CLI_BREAKER=false; _CLI_NOPLAN=false
+_CLI_NOBRANCH=false; _CLI_AGENTS=false; _CLI_MODEL=false; _CLI_BUDGET=false
+_CLI_MODELPROFILE=false; _CLI_AUTOWAIT=false; _CLI_AUTOSCHEDULE=false
+_CLI_WAITTIME=false; _CLI_WEBHOOK=false
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -f)        F="${2:-}";           shift 2 ;;
-        -t)        T="${2:-}";           shift 2 ;;
-        -i)        I="${2:-}";           shift 2 ;;
-        -v)        V=true;               shift   ;;
-        -d)        D="${2:-}";           shift 2 ;;
-        -noqa)     NOQA=true;            shift   ;;
-        -token)    TOKEN="${2:-}";       shift 2 ;;
-        -cooldown) COOLDOWN="${2:-}";    shift 2 ;;
-        -breaker)  BREAKER="${2:-}";     shift 2 ;;
-        -dryrun)   DRYRUN=true;          shift   ;;
-        -noplan)   NOPLAN=true;          shift   ;;
-        -nobranch) NOBRANCH=true;        shift   ;;
-        -profile)  PROFILE_NAME="${2:-}"; shift 2 ;;
-        -agents)   AGENTS="${2:-}";           shift 2 ;;
-        -model)        MODEL_OVERRIDE="${2:-}";   shift 2 ;;
-        -budget)       BUDGET="${2:-}";           shift 2 ;;
-        -modelprofile) MODEL_PROFILE="${2:-}";    shift 2 ;;
-        -autowait)     AUTOWAIT=true;             shift   ;;
-        -autoschedule) AUTOSCHEDULE=true;         shift   ;;
-        -waittime)     WAITTIME="${2:-300}";      shift 2 ;;
-        -webhook)      WEBHOOK_URL="${2:-}";        shift 2 ;;
+        -f)        F="${2:-}";                         shift 2 ;;
+        -t)        T="${2:-}"; _CLI_T=true;            shift 2 ;;
+        -i)        I="${2:-}"; _CLI_I=true;            shift 2 ;;
+        -v)        V=true;     _CLI_V=true;            shift   ;;
+        -d)        D="${2:-}"; _CLI_D=true;            shift 2 ;;
+        -noqa)     NOQA=true;  _CLI_NOQA=true;         shift   ;;
+        -token)    TOKEN="${2:-}";    _CLI_TOKEN=true;  shift 2 ;;
+        -cooldown) COOLDOWN="${2:-}"; _CLI_COOLDOWN=true; shift 2 ;;
+        -breaker)  BREAKER="${2:-}";  _CLI_BREAKER=true;  shift 2 ;;
+        -dryrun)   DRYRUN=true;                        shift   ;;
+        -noplan)   NOPLAN=true;  _CLI_NOPLAN=true;     shift   ;;
+        -nobranch) NOBRANCH=true; _CLI_NOBRANCH=true;  shift   ;;
+        -profile)  PROFILE_NAME="${2:-}";              shift 2 ;;
+        -agents)   AGENTS="${2:-}";    _CLI_AGENTS=true;      shift 2 ;;
+        -model)        MODEL_OVERRIDE="${2:-}"; _CLI_MODEL=true;        shift 2 ;;
+        -budget)       BUDGET="${2:-}";         _CLI_BUDGET=true;       shift 2 ;;
+        -modelprofile) MODEL_PROFILE="${2:-}";  _CLI_MODELPROFILE=true; shift 2 ;;
+        -autowait)     AUTOWAIT=true;           _CLI_AUTOWAIT=true;     shift   ;;
+        -autoschedule) AUTOSCHEDULE=true;       _CLI_AUTOSCHEDULE=true; shift   ;;
+        -waittime)     WAITTIME="${2:-300}";    _CLI_WAITTIME=true;     shift 2 ;;
+        -webhook)      WEBHOOK_URL="${2:-}";    _CLI_WEBHOOK=true;      shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -486,21 +493,6 @@ while [[ $# -gt 0 ]]; do
             shift ;;
     esac
 done
-
-# ---- 7.4: Model Profile Presets ----
-NO_ESCALATION=false
-if [[ -n "$MODEL_PROFILE" ]]; then
-    case "${MODEL_PROFILE,,}" in
-        fast)     [[ -z "$MODEL_OVERRIDE" ]] && MODEL_OVERRIDE="light" ;;
-        quality)  [[ -z "$MODEL_OVERRIDE" ]] && MODEL_OVERRIDE="heavy" ;;
-        balanced) NO_ESCALATION=true ;;
-        auto)     ;;   # classifier + escalation (default)
-        *)
-            printf "${RED}Unknown -modelprofile '%s'. Valid values: fast, balanced, quality, auto${NC}\n" "$MODEL_PROFILE" >&2
-            exit 1
-            ;;
-    esac
-fi
 
 # ------------------------------------------------------------------ #
 # Help
@@ -878,7 +870,67 @@ for l in lines:
 fi
 
 # ------------------------------------------------------------------ #
-# Load named profile
+# Load .orchclauderc from project root (profile overrides RC; CLI overrides both)
+# ------------------------------------------------------------------ #
+RC_LOADED=false
+RC_DIR="${D:-$(pwd)}"
+RC_FILE="$RC_DIR/.orchclauderc"
+if [[ -f "$RC_FILE" && "$RESUME_MODE" != "true" ]]; then
+    eval "$(python3 - <<PYEOF
+import json, shlex, sys
+try:
+    rc = json.load(open("$RC_FILE"))
+except Exception as e:
+    print(f'printf "WARNING: .orchclauderc parse error: {e}\\n" >&2')
+    sys.exit(0)
+def q(v): return shlex.quote(str(v))
+def b(v): return 'true' if v else 'false'
+pairs = [
+    ('T',            rc.get('t'),            q),
+    ('I',            rc.get('i'),            lambda v: str(int(v))),
+    ('V',            rc.get('v'),            b),
+    ('NOQA',         rc.get('noqa'),         b),
+    ('TOKEN',        rc.get('token'),        q),
+    ('COOLDOWN',     rc.get('cooldown'),     lambda v: str(int(v))),
+    ('BREAKER',      rc.get('breaker'),      lambda v: str(int(v))),
+    ('NOPLAN',       rc.get('noplan'),       b),
+    ('NOBRANCH',     rc.get('nobranch'),     b),
+    ('AGENTS',       rc.get('agents'),       lambda v: str(int(v))),
+    ('WEBHOOK_URL',  rc.get('webhook'),      q),
+    ('MODEL_OVERRIDE', rc.get('model'),      q),
+    ('BUDGET',       rc.get('budget'),       lambda v: str(float(v))),
+    ('MODEL_PROFILE', rc.get('modelprofile'), q),
+    ('AUTOWAIT',     rc.get('autowait'),     b),
+    ('AUTOSCHEDULE', rc.get('autoschedule'), b),
+    ('WAITTIME',     rc.get('waittime'),     lambda v: str(int(v))),
+]
+for var, val, fmt in pairs:
+    if val is not None:
+        print(f'_RC_{var}={fmt(val)}')
+print('RC_LOADED=true')
+PYEOF
+)"
+    [[ "$_CLI_T"            != "true" && -n "${_RC_T:-}"              ]] && T="$_RC_T"
+    [[ "$_CLI_I"            != "true" && -n "${_RC_I:-}"              ]] && I="$_RC_I"
+    [[ "$_CLI_V"            != "true" && -n "${_RC_V:-}"              ]] && V="$_RC_V"
+    [[ "$_CLI_NOQA"         != "true" && -n "${_RC_NOQA:-}"           ]] && NOQA="$_RC_NOQA"
+    [[ "$_CLI_TOKEN"        != "true" && -n "${_RC_TOKEN:-}"          ]] && TOKEN="$_RC_TOKEN"
+    [[ "$_CLI_COOLDOWN"     != "true" && -n "${_RC_COOLDOWN:-}"       ]] && COOLDOWN="$_RC_COOLDOWN"
+    [[ "$_CLI_BREAKER"      != "true" && -n "${_RC_BREAKER:-}"        ]] && BREAKER="$_RC_BREAKER"
+    [[ "$_CLI_NOPLAN"       != "true" && -n "${_RC_NOPLAN:-}"         ]] && NOPLAN="$_RC_NOPLAN"
+    [[ "$_CLI_NOBRANCH"     != "true" && -n "${_RC_NOBRANCH:-}"       ]] && NOBRANCH="$_RC_NOBRANCH"
+    [[ "$_CLI_AGENTS"       != "true" && -n "${_RC_AGENTS:-}"         ]] && AGENTS="$_RC_AGENTS"
+    [[ "$_CLI_WEBHOOK"      != "true" && -n "${_RC_WEBHOOK_URL:-}"    ]] && WEBHOOK_URL="$_RC_WEBHOOK_URL"
+    [[ "$_CLI_MODEL"        != "true" && -n "${_RC_MODEL_OVERRIDE:-}" ]] && MODEL_OVERRIDE="$_RC_MODEL_OVERRIDE"
+    [[ "$_CLI_BUDGET"       != "true" && -n "${_RC_BUDGET:-}"         ]] && BUDGET="$_RC_BUDGET"
+    [[ "$_CLI_MODELPROFILE" != "true" && -n "${_RC_MODEL_PROFILE:-}"  ]] && MODEL_PROFILE="$_RC_MODEL_PROFILE"
+    [[ "$_CLI_AUTOWAIT"     != "true" && -n "${_RC_AUTOWAIT:-}"       ]] && AUTOWAIT="$_RC_AUTOWAIT"
+    [[ "$_CLI_AUTOSCHEDULE" != "true" && -n "${_RC_AUTOSCHEDULE:-}"   ]] && AUTOSCHEDULE="$_RC_AUTOSCHEDULE"
+    [[ "$_CLI_WAITTIME"     != "true" && -n "${_RC_WAITTIME:-}"       ]] && WAITTIME="$_RC_WAITTIME"
+fi
+
+# ------------------------------------------------------------------ #
+# Load named profile (profile overrides .orchclauderc; CLI overrides both)
 # ------------------------------------------------------------------ #
 if [[ -n "$PROFILE_NAME" && "$RESUME_MODE" != "true" ]]; then
     if ! profile_exists "$PROFILE_NAME"; then
@@ -902,20 +954,37 @@ print(f"_P_BREAKER={int(p.get('breaker',10))}")
 print(f"_P_NOPLAN={'true' if p.get('noplan') else 'false'}")
 print(f"_P_NOBRANCH={'true' if p.get('nobranch') else 'false'}")
 print(f"_P_AGENTS={int(p.get('agents',1))}")
+print(f"_P_WEBHOOK={q(p.get('webhook',''))}")
 PYEOF
 )"
-    # Apply profile values (CLI defaults win over profile only if CLI was explicitly set)
-    [[ "$T"        == "30m"                    ]] && T="$_P_T"
-    [[ "$I"        == "40"                     ]] && I=$_P_I
-    [[ -z "$D"                                 ]] && D="$_P_D"
-    [[ "$V"        == "false"                  ]] && V="$_P_V"
-    [[ "$NOQA"     == "false"                  ]] && NOQA="$_P_NOQA"
-    [[ "$TOKEN"    == "ORCHESTRATION_COMPLETE" ]] && TOKEN="$_P_TOKEN"
-    [[ "$COOLDOWN" == "5"                      ]] && COOLDOWN=$_P_COOLDOWN
-    [[ "$BREAKER"  == "10"                     ]] && BREAKER=$_P_BREAKER
-    [[ "$NOPLAN"   == "false"                  ]] && NOPLAN="$_P_NOPLAN"
-    [[ "$NOBRANCH" == "false"                  ]] && NOBRANCH="$_P_NOBRANCH"
-    [[ "$AGENTS"   == "1"                      ]] && AGENTS=$_P_AGENTS
+    # Apply profile values (profile overrides .orchclauderc; CLI overrides both)
+    [[ "$_CLI_T"            != "true" ]] && T="$_P_T"
+    [[ "$_CLI_I"            != "true" ]] && I=$_P_I
+    [[ "$_CLI_D"            != "true" ]] && D="$_P_D"
+    [[ "$_CLI_V"            != "true" ]] && V="$_P_V"
+    [[ "$_CLI_NOQA"         != "true" ]] && NOQA="$_P_NOQA"
+    [[ "$_CLI_TOKEN"        != "true" ]] && TOKEN="$_P_TOKEN"
+    [[ "$_CLI_COOLDOWN"     != "true" ]] && COOLDOWN=$_P_COOLDOWN
+    [[ "$_CLI_BREAKER"      != "true" ]] && BREAKER=$_P_BREAKER
+    [[ "$_CLI_NOPLAN"       != "true" ]] && NOPLAN="$_P_NOPLAN"
+    [[ "$_CLI_NOBRANCH"     != "true" ]] && NOBRANCH="$_P_NOBRANCH"
+    [[ "$_CLI_AGENTS"       != "true" ]] && AGENTS=$_P_AGENTS
+    [[ "$_CLI_WEBHOOK"      != "true" ]] && WEBHOOK_URL="$_P_WEBHOOK"
+fi
+
+# ---- 7.4: Model Profile Presets (evaluated after RC + profile so all sources are resolved) ----
+NO_ESCALATION=false
+if [[ -n "$MODEL_PROFILE" ]]; then
+    case "${MODEL_PROFILE,,}" in
+        fast)     [[ -z "$MODEL_OVERRIDE" ]] && MODEL_OVERRIDE="light" ;;
+        quality)  [[ -z "$MODEL_OVERRIDE" ]] && MODEL_OVERRIDE="heavy" ;;
+        balanced) NO_ESCALATION=true ;;
+        auto)     ;;
+        *)
+            printf "${RED}Unknown -modelprofile '%s'. Valid values: fast, balanced, quality, auto${NC}\n" "$MODEL_PROFILE" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 # ------------------------------------------------------------------ #
@@ -1135,6 +1204,7 @@ else
     write_log "Model     : auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)" "$CYAN"
 fi
 write_log "Budget    : $( [[ "$BUDGET" != "0" && -n "$BUDGET" ]] && echo "\$$BUDGET limit — pause and confirm if cost exceeds threshold" || echo 'disabled (use -budget <amount> to set a limit)' )" "$CYAN"
+write_log "Webhook   : $( [[ -n "$WEBHOOK_URL" ]] && echo "$WEBHOOK_URL (Slack/Discord/generic JSON on run end)" || echo 'disabled (use -webhook <url> to notify on completion)' )" "$CYAN"
 if [[ "$AUTOWAIT" == "true" ]]; then
     write_log "UsageLimit: autowait (sleep in-process, $WAITTIME min wait)" "$CYAN"
 elif [[ "$AUTOSCHEDULE" == "true" ]]; then
@@ -1142,6 +1212,7 @@ elif [[ "$AUTOSCHEDULE" == "true" ]]; then
 else
     write_log "UsageLimit: manual resume (orchclaude resume)" "$CYAN"
 fi
+[[ "$RC_LOADED" == "true" ]] && write_log "RC file   : $RC_FILE" "$CYAN"
 [[ -n "$PROFILE_NAME" ]] && write_log "Profile   : $PROFILE_NAME (loaded from $PROFILES_FILE)" "$CYAN"
 write_log "Webhook   : $( [[ -n "$WEBHOOK_URL" ]] && echo "$WEBHOOK_URL (Slack/Discord/generic JSON on run end)" || echo 'disabled (use -webhook <url> to notify on completion)' )" "$CYAN"
 write_log "Log       : $LOG_FILE" "$CYAN"
