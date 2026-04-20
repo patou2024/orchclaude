@@ -36,7 +36,8 @@ param(
     [switch]$autowait,          # -autowait       : sleep in-process after usage limit and auto-resume (terminal must stay open)
     [switch]$autoschedule,      # -autoschedule   : create schtasks entry and exit after usage limit (terminal can close)
     [int]$waittime = 300,       # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
-    [string]$webhook = ""       # -webhook <url>  : POST a JSON summary to this URL when the run finishes (Slack/Discord/generic)
+    [string]$webhook = "",      # -webhook <url>  : POST a JSON summary to this URL when the run finishes (Slack/Discord/generic)
+    [int]$n = 20                # -n <count>      : number of history entries to show (used by orchclaude history)
 )
 
 # ---- Help ----
@@ -51,7 +52,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, template, help, profile"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, template, history, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -424,6 +425,7 @@ $sessionContext
             -p (Get-Content $promptFile -Raw) `
             --allowedTools "Read,Glob,Grep" `
             --max-turns 20 `
+            --dangerously-skip-permissions `
             2>&1
     } catch [System.Management.Automation.CommandNotFoundException] {
         Write-Host "'claude' command not found. Is Claude Code installed and in your PATH?" -ForegroundColor Red
@@ -639,6 +641,90 @@ if ($Command -eq "template") {
     }
 }
 
+# ---- History command ----
+if ($Command -eq "history") {
+    $histDir  = Join-Path $env:USERPROFILE ".orchclaude"
+    $histFile = Join-Path $histDir "history.json"
+
+    # history clear
+    if ($Prompt -ieq "clear") {
+        if (-not (Test-Path $histFile)) {
+            Write-Host "No history to clear." -ForegroundColor Yellow
+            exit 0
+        }
+        $confirm = Read-Host "Clear all orchclaude history? This cannot be undone. (y/n)"
+        if ($confirm -ieq "y") {
+            Remove-Item $histFile -Force
+            Write-Host "History cleared." -ForegroundColor Green
+        } else {
+            Write-Host "Cancelled." -ForegroundColor DarkGray
+        }
+        exit 0
+    }
+
+    if (-not (Test-Path $histFile)) {
+        Write-Host "No history yet. History is recorded after each run." -ForegroundColor Yellow
+        exit 0
+    }
+
+    try {
+        $raw     = Get-Content $histFile -Raw | ConvertFrom-Json
+        $history = if ($raw -is [array]) { @($raw) } elseif ($raw) { @($raw) } else { @() }
+    } catch {
+        Write-Host "History file is corrupt or unreadable: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    if ($history.Count -eq 0) {
+        Write-Host "No history yet. History is recorded after each run." -ForegroundColor Yellow
+        exit 0
+    }
+
+    $showCount = if ($n -ne 20) { $n } else { 20 }
+    $entries   = $history | Select-Object -First $showCount
+
+    Write-Host ""
+    Write-Host ("=" * 90) -ForegroundColor Cyan
+    Write-Host ("  orchclaude run history  (showing $($entries.Count) of $($history.Count) runs)") -ForegroundColor Cyan
+    Write-Host ("=" * 90) -ForegroundColor Cyan
+    Write-Host ""
+
+    $idx = 1
+    foreach ($e in $entries) {
+        $statusColor = switch ($e.status) {
+            "complete"            { "Green"  }
+            "timeout"             { "Yellow" }
+            "failed"              { "Red"    }
+            "usage_limit_paused"  { "Magenta"}
+            default               { "White"  }
+        }
+        $statusLabel = "{0,-8}" -f $e.status.ToUpper()
+        $dateStr     = try { ([datetime]$e.date).ToString("yyyy-MM-dd HH:mm") } catch { $e.date }
+        $dirShort    = $e.workDir -replace [regex]::Escape($env:USERPROFILE), "~"
+        if ($dirShort.Length -gt 40) { $dirShort = "..." + $dirShort.Substring($dirShort.Length - 37) }
+        $dirPadded   = "{0,-40}" -f $dirShort
+        $cost        = "`${0:N2}" -f [double]$e.estimatedCostUSD
+        $excerpt     = if ($e.promptExcerpt.Length -gt 50) { $e.promptExcerpt.Substring(0, 50) + "..." } else { $e.promptExcerpt }
+        $excerpt     = $excerpt -replace "`r|`n", " "
+
+        $line1 = "  #{0,-4} {1}  " -f $idx, $dateStr
+        Write-Host $line1 -NoNewline -ForegroundColor DarkGray
+        Write-Host $statusLabel -NoNewline -ForegroundColor $statusColor
+        Write-Host ("  {0}  {1,5}m  {2,6}  {3,3} iters" -f $dirPadded, $e.durationMinutes, $cost, $e.iterations) -NoNewline -ForegroundColor Gray
+        Write-Host ""
+        Write-Host ("        `"$excerpt`"") -ForegroundColor DarkGray
+        $idx++
+    }
+
+    Write-Host ""
+    if ($history.Count -gt $showCount) {
+        Write-Host "  Use 'orchclaude history -n $($history.Count)' to see all entries." -ForegroundColor DarkGray
+    }
+    Write-Host "  Use 'orchclaude history clear' to wipe history." -ForegroundColor DarkGray
+    Write-Host ""
+    exit 0
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -786,7 +872,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude template, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude template, orchclaude history, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -1052,6 +1138,65 @@ function Send-Webhook($status) {
     }
 }
 
+function Write-History($status) {
+    try {
+        $histDir  = Join-Path $env:USERPROFILE ".orchclaude"
+        $histFile = Join-Path $histDir "history.json"
+
+        if (-not (Test-Path $histDir)) { New-Item -ItemType Directory -Path $histDir | Out-Null }
+
+        $elapsedMin = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
+        $cost       = Get-EstimatedCost
+        $lastProg   = ""
+        $progCount  = 0
+        if (Test-Path $progressFile) {
+            $progLines = @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+            $progCount = $progLines.Count
+            if ($progCount -gt 0) { $lastProg = $progLines[-1] }
+        }
+
+        $iterCount = 0
+        if (Test-Path $sessionFile) {
+            try {
+                $sess      = Get-Content $sessionFile -Raw | ConvertFrom-Json
+                $iterCount = [int]$sess.currentIteration
+            } catch {}
+        }
+
+        $promptExcerpt = if ($basePrompt.Length -gt 120) { $basePrompt.Substring(0, 120) + "..." } else { $basePrompt }
+        $id            = (Get-Date).ToString("yyyyMMdd-HHmmss") + "-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 6))
+
+        $entry = [ordered]@{
+            id               = $id
+            date             = (Get-Date).ToString("o")
+            workDir          = $workDir
+            promptExcerpt    = $promptExcerpt
+            status           = $status
+            iterations       = $iterCount
+            durationMinutes  = $elapsedMin
+            estimatedCostUSD = [double]$cost
+            progressCount    = $progCount
+            lastProgress     = $lastProg
+        }
+
+        $history = @()
+        if (Test-Path $histFile) {
+            try {
+                $raw = Get-Content $histFile -Raw | ConvertFrom-Json
+                if ($raw -is [array]) { $history = @($raw) }
+                elseif ($raw) { $history = @($raw) }
+            } catch {}
+        }
+
+        $history = @($entry) + $history
+        if ($history.Count -gt 200) { $history = $history[0..199] }
+
+        $history | ConvertTo-Json -Depth 5 | Set-Content $histFile -Encoding UTF8
+    } catch {
+        Write-Log "History write failed (non-fatal): $_" "DarkYellow"
+    }
+}
+
 function Check-Budget($currentIter = 0) {
     if ($script:budget -le 0) { return }
     $currentCost = Get-EstimatedCost
@@ -1065,6 +1210,7 @@ function Check-Budget($currentIter = 0) {
             Write-Session "timeout" $currentIter
             Show-WorktreeBranchInfo
             Send-Webhook "failed"
+            Write-History "failed"
             exit 1
         } else {
             $script:budget = [math]::Round($script:budget * 2, 4)
@@ -1183,7 +1329,8 @@ function Invoke-Claude($prompt, $iterLabel, $modelId = "") {
     $claudeArgs = @(
         "-p", (Get-Content $promptFile -Raw),
         "--allowedTools", "Edit,Bash,Read,Write,Glob,Grep",
-        "--max-turns", "50"
+        "--max-turns", "50",
+        "--dangerously-skip-permissions"
     )
     if ($modelId) { $claudeArgs += "--model"; $claudeArgs += $modelId }
 
@@ -1422,6 +1569,7 @@ Remember: work ONLY on your assigned subtasks above.
                         -p (Get-Content $promptFile -Raw) `
                         --allowedTools "Edit,Bash,Read,Write,Glob,Grep" `
                         --max-turns 50 `
+                        --dangerously-skip-permissions `
                         2>&1
                 } catch {
                     $out = "ERROR: claude not found ÔÇö $($_.Exception.Message)"
@@ -1487,6 +1635,7 @@ Remember: work ONLY on your assigned subtasks above.
             Show-CostEstimate
             Show-WorktreeBranchInfo
             Send-Webhook "timeout"
+            Write-History "timeout"
             exit 1
         }
 
@@ -1544,6 +1693,7 @@ $dependentSection
             Show-CostEstimate
             Show-WorktreeBranchInfo
             Send-Webhook "failed"
+            Write-History "failed"
             exit 1
         }
 
@@ -1560,6 +1710,7 @@ $dependentSection
                 Show-CostEstimate
                 Show-WorktreeBranchInfo
                 Send-Webhook "timeout"
+                Write-History "timeout"
                 exit 1
             }
             $remaining = [math]::Round(($timeoutSeconds - $elapsed) / 60, 1)
@@ -1621,6 +1772,7 @@ Your job now is to act as a QA engineer and adversarial tester.
         Show-CostEstimate
         Write-Banner "ALL DONE  |  $totalTime total" "Green"
         Send-Webhook "complete"
+        Write-History "complete"
 
         if ($useWorktree) {
             Write-Host ""
@@ -1668,6 +1820,7 @@ for ($iter = $startIter; $iter -le $i; $iter++) {
         Write-Session "timeout" $iter
         Show-CostEstimate
         Send-Webhook "timeout"
+        Write-History "timeout"
         break
     }
 
@@ -1859,6 +2012,7 @@ Continue from where you left off. Output $token when everything is done.
             Show-CostEstimate
             Show-WorktreeBranchInfo
             Send-Webhook "failed"
+            Write-History "failed"
             exit 1
         } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
             Write-Log "User chose to continue. Resetting failure streak." "Cyan"
@@ -1882,6 +2036,7 @@ if (-not $completed) {
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
     Show-CostEstimate
     Send-Webhook "failed"
+    Write-History "failed"
     Show-WorktreeBranchInfo
     Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
@@ -1904,6 +2059,7 @@ if ($noqa) {
         Write-Banner "TIMEOUT before QA phase could run" "Red"
         Show-CostEstimate
         Send-Webhook "timeout"
+        Write-History "timeout"
         Show-WorktreeBranchInfo
         exit 1
     }
@@ -1976,6 +2132,7 @@ Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
 Show-CostEstimate
 Send-Webhook "complete"
+Write-History "complete"
 Write-Banner "ALL DONE  |  $totalTime total" "Green"
 
 if ($useWorktree) {
