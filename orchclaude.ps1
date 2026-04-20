@@ -35,7 +35,8 @@ param(
     [string]$modelprofile = "", # -modelprofile <preset>: fast | balanced | quality | auto
     [switch]$autowait,          # -autowait       : sleep in-process after usage limit and auto-resume (terminal must stay open)
     [switch]$autoschedule,      # -autoschedule   : create schtasks entry and exit after usage limit (terminal can close)
-    [int]$waittime = 300        # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
+    [int]$waittime = 300,       # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
+    [int]$n = 20                # -n <number>     : for 'orchclaude history' - entries to show (default 20)
 )
 
 # ---- 7.4: Model Profile Presets ----
@@ -65,8 +66,8 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, history, help, profile"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -n"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -556,6 +557,83 @@ if ($Command -eq "diff") {
     exit 0
 }
 
+# ---- History command ----
+if ($Command -eq "history") {
+    $historyDir  = Join-Path $env:USERPROFILE ".orchclaude"
+    $historyFile = Join-Path $historyDir "history.json"
+    $subCmd      = $Prompt.ToLower()
+
+    if ($subCmd -eq "clear") {
+        if (-not (Test-Path $historyFile)) {
+            Write-Host "No history to clear." -ForegroundColor Yellow
+            exit 0
+        }
+        $confirm = Read-Host "Clear all run history? (y/n)"
+        if ($confirm -ieq "y") {
+            Remove-Item $historyFile -Force
+            Write-Host "History cleared." -ForegroundColor Green
+        } else {
+            Write-Host "Cancelled." -ForegroundColor DarkGray
+        }
+        exit 0
+    }
+
+    if (-not (Test-Path $historyFile)) {
+        Write-Host "No history yet. History is recorded after each run." -ForegroundColor Yellow
+        exit 0
+    }
+
+    try {
+        $raw     = Get-Content $historyFile -Raw | ConvertFrom-Json
+        $history = if ($raw -is [array]) { @($raw) } else { @($raw) }
+    } catch {
+        Write-Host "History file is corrupt or unreadable: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    $limit      = if ($n -gt 0) { $n } else { 20 }
+    $totalCount = $history.Count
+    # newest first
+    $allReversed = @($history)[($totalCount - 1)..0]
+    $toShow      = $allReversed | Select-Object -First $limit
+
+    Write-Host ""
+    Write-Host "orchclaude run history  (showing $($toShow.Count) of $totalCount runs, newest first)" -ForegroundColor Cyan
+    Write-Host ("-" * 92) -ForegroundColor Cyan
+
+    $num = 1
+    foreach ($entry in $toShow) {
+        $dateStr   = try { ([datetime]$entry.date).ToString("yyyy-MM-dd HH:mm") } catch { "$($entry.date)" }
+        $statusStr = "$($entry.status)".ToUpper().PadRight(20)
+        $wd        = if ($entry.workDir.Length -gt 40) { "..." + $entry.workDir.Substring($entry.workDir.Length - 37) } else { "$($entry.workDir)" }
+        $wd        = $wd.PadRight(40)
+        $durStr    = "$($entry.durationMinutes)m".PadLeft(6)
+        $costStr   = "`$$($entry.estimatedCostUSD)".PadLeft(7)
+        $iterStr   = "$($entry.iterations) iters".PadLeft(8)
+        $excerpt   = if ($entry.promptExcerpt.Length -gt 35) { $entry.promptExcerpt.Substring(0, 32) + "..." } else { "$($entry.promptExcerpt)" }
+
+        $statusColor = switch ($entry.status) {
+            "complete"           { "Green"  }
+            "timeout"            { "Red"    }
+            "failed"             { "Red"    }
+            "usage_limit_paused" { "Yellow" }
+            default              { "White"  }
+        }
+
+        $prefix = "  #$("$num".PadLeft(3))  $dateStr  "
+        Write-Host $prefix -NoNewline
+        Write-Host $statusStr -ForegroundColor $statusColor -NoNewline
+        Write-Host "  $wd  $durStr  $costStr  $iterStr  `"$excerpt`""
+        $num++
+    }
+
+    Write-Host ""
+    Write-Host "  Use 'orchclaude history -n 50' to show more entries." -ForegroundColor DarkGray
+    Write-Host "  Use 'orchclaude history clear' to wipe the history." -ForegroundColor DarkGray
+    Write-Host ""
+    exit 0
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -657,7 +735,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude history, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -878,12 +956,55 @@ function Check-Budget($currentIter = 0) {
             Write-Log "User stopped run at budget limit (`$$currentCost > `$$($script:budget))." "Red"
             Show-CostEstimate
             Write-Session "timeout" $currentIter
+            Write-History "failed" $currentIter
             Show-WorktreeBranchInfo
             exit 1
         } else {
             $script:budget = [math]::Round($script:budget * 2, 4)
             Write-Log "Budget doubled to `$$($script:budget). Continuing." "Yellow"
         }
+    }
+}
+
+function Write-History($status, $iterCount) {
+    try {
+        $historyDir  = Join-Path $env:USERPROFILE ".orchclaude"
+        $historyFile = Join-Path $historyDir "history.json"
+        if (-not (Test-Path $historyDir)) { New-Item -ItemType Directory -Path $historyDir | Out-Null }
+
+        $existing = @()
+        if (Test-Path $historyFile) {
+            try {
+                $raw = Get-Content $historyFile -Raw | ConvertFrom-Json
+                if ($raw -is [array]) { $existing = @($raw) } elseif ($raw) { $existing = @($raw) }
+            } catch { $existing = @() }
+        }
+
+        $excerpt = if ($basePrompt.Length -gt 120) { $basePrompt.Substring(0, 120) } else { $basePrompt }
+        $progressLines = if (Test-Path $progressFile) {
+            @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+        } else { @() }
+        $lastProgress    = if ($progressLines.Count -gt 0) { $progressLines[-1] } else { "" }
+        $durationMinutes = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
+
+        $entry = [ordered]@{
+            id               = (Get-Date).ToString("yyyyMMdd-HHmmss")
+            date             = (Get-Date).ToString("o")
+            workDir          = $originalWorkDir
+            promptExcerpt    = $excerpt
+            status           = $status
+            iterations       = $iterCount
+            durationMinutes  = $durationMinutes
+            estimatedCostUSD = Get-EstimatedCost
+            progressCount    = $progressLines.Count
+            lastProgress     = $lastProgress
+        }
+
+        $merged = @($existing) + @($entry)
+        if ($merged.Count -gt 200) { $merged = $merged | Select-Object -Last 200 }
+        $merged | ConvertTo-Json -Depth 5 | Set-Content $historyFile -Encoding UTF8
+    } catch {
+        Write-Host "[history] Warning: could not write history entry: $_" -ForegroundColor DarkGray
     }
 }
 
@@ -901,12 +1022,16 @@ function Test-UsageLimitError($text) {
         "rate_limit_error",
         "overloaded_error",
         "exceeded your current quota",
-        "You have reached your usage limit"
+        "You have reached your usage limit",
+        "out of extra usage",
+        "Usage limit reached",
+        "out of usage"
     )
     foreach ($p in $patterns) {
-        if ($text -match [regex]::Escape($p)) { return $true }
+        if ($text -imatch [regex]::Escape($p)) { return $true }
     }
     if ($text -imatch "usage limit") { return $true }
+    if ($text -imatch "resets \d") { return $true }
     return $false
 }
 
@@ -980,11 +1105,13 @@ function Handle-UsageLimit($currentIter) {
         }
 
         Show-CostEstimate
+        Write-History "usage_limit_paused" $currentIter
         exit 0
     } else {
         Write-Log "Session saved. Run 'orchclaude resume' to continue once the limit resets (~$($script:waittime) min)." "Yellow"
         Write-Log "Expected reset at: $($resumeAt.ToString('HH:mm:ss'))" "Yellow"
         Show-CostEstimate
+        Write-History "usage_limit_paused" $currentIter
         Show-WorktreeBranchInfo
         exit 0
     }
@@ -1299,6 +1426,7 @@ Remember: work ONLY on your assigned subtasks above.
             Write-Banner "TIMEOUT before merge phase" "Red"
             Write-Session "timeout" $i
             Show-CostEstimate
+            Write-History "timeout" $i
             Show-WorktreeBranchInfo
             exit 1
         }
@@ -1352,9 +1480,10 @@ $dependentSection
             $completed = $true
             Write-Session "complete" $i
         } else {
-            Write-Banner "Merge phase did not produce completion token ÔÇö check log" "Red"
+            Write-Banner "Merge phase did not produce completion token — check log" "Red"
             Write-Session "timeout" $i
             Show-CostEstimate
+            Write-History "failed" $i
             Show-WorktreeBranchInfo
             exit 1
         }
@@ -1370,6 +1499,7 @@ $dependentSection
                 Write-Session "timeout" $i
                 Write-Banner "TIMEOUT before QA phase could run" "Red"
                 Show-CostEstimate
+                Write-History "timeout" $i
                 Show-WorktreeBranchInfo
                 exit 1
             }
@@ -1430,6 +1560,7 @@ Your job now is to act as a QA engineer and adversarial tester.
         Write-Session "complete" $i
         $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
         Show-CostEstimate
+        Write-History "complete" $i
         Write-Banner "ALL DONE  |  $totalTime total" "Green"
 
         if ($useWorktree) {
@@ -1689,6 +1820,7 @@ if (-not $completed) {
     Write-Session "timeout" $i
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
     Show-CostEstimate
+    Write-History "timeout" $i
     Show-WorktreeBranchInfo
     Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
@@ -1710,6 +1842,7 @@ if ($noqa) {
         Write-Session "timeout" $i
         Write-Banner "TIMEOUT before QA phase could run" "Red"
         Show-CostEstimate
+        Write-History "timeout" $i
         Show-WorktreeBranchInfo
         exit 1
     }
