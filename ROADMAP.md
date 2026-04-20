@@ -174,6 +174,73 @@ Also useful for debugging the orchestration instructions being injected.
 
 ---
 
+### 1.6 — Usage Limit Detection and Auto-Resume
+
+**What it is:**
+Detects when a Claude Code run hits the usage/rate limit, saves state cleanly, and automatically
+resumes the run after a configurable wait (default 5 hours, matching Claude's reset window).
+Two modes: `-autowait` keeps the terminal open and resumes in-process; `-autoschedule` creates
+a Windows Task Scheduler entry and exits so the machine can be left unattended.
+
+**Why it matters:**
+Without this, hitting the usage limit kills the run silently and the user loses their session.
+This is the most disruptive real-world problem with long orchclaude builds.
+With this, hitting the limit is just a pause — the build continues automatically.
+
+**Usage limit error patterns to detect (in Claude's output):**
+- "Claude AI usage limit reached"
+- "rate_limit_error"
+- "overloaded_error"
+- "exceeded your current quota"
+- "You have reached your usage limit"
+- Any output containing "usage limit" (case-insensitive)
+
+**Implementation:**
+
+Detection:
+- After each Invoke-Claude call, scan output for the above patterns
+- If matched: set $usageLimitHit = $true, print warning in Red, save state
+
+State save on limit hit:
+- Write/update orchclaude-session.json with status "usage_limit_paused"
+- Include: timestamp of pause, resumeAfter (now + waitSeconds), iteration number, full prompt, progress lines
+- Print: "Usage limit hit at [time]. Will resume at [time+5h]."
+
+Add flags:
+- `-autowait` switch — sleep in-process and auto-resume (terminal must stay open)
+- `-autoschedule` switch — create a schtasks entry and exit cleanly (terminal can close)
+- `-waittime <minutes>` — override the wait duration. Default: 300 (5 hours)
+- Neither flag set: save state and exit with a clear message telling the user to run `orchclaude resume`
+
+autowait mode:
+- Print a countdown every 10 minutes: "Resuming in Xh Ym..."
+- After wait completes: print "Resuming now..." and continue the loop from current iteration
+- If interrupted during wait: session file preserves the resumeAfter timestamp
+  so `orchclaude resume` can calculate remaining wait and sleep the rest
+
+autoschedule mode:
+- Build the resume command: `powershell.exe -ExecutionPolicy Bypass -File "<path>\orchclaude.ps1" resume -d "<workDir>"`
+- Run: `schtasks /create /tn "orchclaude-resume-<timestamp>" /tr "<command>" /sc once /st <HH:MM> /f`
+- Where /st is current time + waittime
+- Print: "Scheduled resume at [time]. Safe to close this terminal."
+- Exit cleanly
+
+`orchclaude resume` must also handle "usage_limit_paused" status:
+- Check if current time >= resumeAfter
+- If not yet: print "Not ready yet. Resume scheduled for [resumeAfter]. Xh Ym remaining."
+- If ready: proceed with normal resume flow
+
+**Acceptance Criteria:**
+- Usage limit errors are detected and do not crash the run with an unhelpful message
+- `-autowait` sleeps and resumes automatically without user interaction
+- `-autoschedule` creates a valid schtasks entry visible in Task Scheduler and exits
+- `orchclaude resume` on a paused session correctly waits if time has not elapsed
+- `-waittime 10` overrides to a 10-minute wait (useful for testing)
+- State is fully preserved across the pause: prompt, progress, iteration count
+- Documented in README and --help with examples
+
+---
+
 ## Phase 2 — Planning and Intelligence
 
 Goal: make orchclaude smarter about how it approaches tasks, not just how it loops.

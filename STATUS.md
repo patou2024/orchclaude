@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Feature Backlog — `orchclaude diff` (see ROADMAP.md)
+**Next item to implement:** 1.6 — Usage Limit Detection and Auto-Resume (see ROADMAP.md)
 **Last session date:** 2026-04-19
 **Windows stable:** yes
 **Cross-platform:** no
@@ -43,6 +43,7 @@ It is the first thing any new session should read before touching any code.
 - [x] 1.3 — Rate Limiting and Circuit Breaker
 - [x] 1.4 — Token / Cost Estimator
 - [x] 1.5 — `--dry-run` flag
+- [ ] 1.6 — Usage Limit Detection and Auto-Resume
 
 ---
 
