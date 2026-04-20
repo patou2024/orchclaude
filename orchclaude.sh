@@ -1008,10 +1008,102 @@ if [[ "$AGENTS" -gt 1 && "$RESUME_MODE" == "true" ]]; then
 fi
 
 # ------------------------------------------------------------------ #
+# Template command
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "template" ]]; then
+    BUILTIN_TPL_DIR="$(dirname "$0")/templates"
+    USER_TPL_DIR="$HOME/.orchclaude/templates"
+    TPL_SUBCMD="${PROMPT_ARG,,}"  # lower-case
+
+    get_template_map() {
+        # Print "name|path|source" lines for every .md template found
+        for dir_entry in "$BUILTIN_TPL_DIR" "$USER_TPL_DIR"; do
+            local src="built-in"
+            [[ "$dir_entry" == "$USER_TPL_DIR" ]] && src="custom"
+            if [[ -d "$dir_entry" ]]; then
+                while IFS= read -r -d '' f; do
+                    local name
+                    name=$(basename "$f" .md)
+                    printf '%s|%s|%s\n' "$name" "$f" "$src"
+                done < <(find "$dir_entry" -maxdepth 1 -name "*.md" -print0 | sort -z)
+            fi
+        done
+    }
+
+    if [[ "$TPL_SUBCMD" == "list" ]]; then
+        printf "\n${CYAN}%s${NC}\n" "======================================================="
+        printf "${CYAN}  orchclaude templates${NC}\n"
+        printf "${CYAN}%s${NC}\n\n" "======================================================="
+        found=0
+        while IFS='|' read -r tname tpath tsrc; do
+            found=1
+            tag=""
+            [[ "$tsrc" == "custom" ]] && tag=" [custom]"
+            # grab first non-blank line, strip the "# orchclaude template: " prefix
+            desc=$(grep -m1 '\S' "$tpath" 2>/dev/null | sed 's/^#*[[:space:]]*orchclaude template:[[:space:]]*//')
+            printf "  ${WHITE}%-20s${NC} %s%s\n" "$tname" "$desc" "$tag"
+        done < <(get_template_map)
+        if [[ "$found" -eq 0 ]]; then
+            printf "  ${YELLOW}No templates found.${NC}\n"
+            printf "  ${DGRAY}Built-in templates should be in: %s${NC}\n" "$BUILTIN_TPL_DIR"
+        fi
+        printf "\n  ${DGRAY}Usage:${NC}\n"
+        printf "  ${DGRAY}  orchclaude template show <name>           -- view the prompt${NC}\n"
+        printf "  ${DGRAY}  orchclaude template run  <name> [flags]   -- run with this template${NC}\n"
+        printf "\n  ${DGRAY}Add custom templates: place .md files in %s${NC}\n\n" "$USER_TPL_DIR"
+        exit 0
+
+    elif [[ "$TPL_SUBCMD" == "show" ]]; then
+        if [[ -z "$SUBARG" ]]; then
+            printf "${RED}Usage: orchclaude template show <name>${NC}\n" >&2; exit 1
+        fi
+        TPL_PATH=""
+        TPL_SRC=""
+        while IFS='|' read -r tname tpath tsrc; do
+            if [[ "$tname" == "$SUBARG" ]]; then TPL_PATH="$tpath"; TPL_SRC="$tsrc"; fi
+        done < <(get_template_map)
+        if [[ -z "$TPL_PATH" ]]; then
+            printf "${RED}Template '%s' not found. Run 'orchclaude template list' to see available templates.${NC}\n" "$SUBARG" >&2
+            exit 1
+        fi
+        printf "\n${CYAN}%s${NC}\n" "======================================================="
+        printf "${CYAN}  Template: %s  (%s)${NC}\n" "$SUBARG" "$TPL_SRC"
+        printf "${CYAN}%s${NC}\n\n" "======================================================="
+        cat "$TPL_PATH"
+        printf "\n${DGRAY}%s${NC}\n" "======================================================="
+        printf "${DGRAY}  Run it: orchclaude template run %s -t 1h -d <project-dir>${NC}\n\n" "$SUBARG"
+        exit 0
+
+    elif [[ "$TPL_SUBCMD" == "run" ]]; then
+        if [[ -z "$SUBARG" ]]; then
+            printf "${RED}Usage: orchclaude template run <name> [flags]${NC}\n" >&2; exit 1
+        fi
+        TPL_PATH=""
+        TPL_SRC=""
+        while IFS='|' read -r tname tpath tsrc; do
+            if [[ "$tname" == "$SUBARG" ]]; then TPL_PATH="$tpath"; TPL_SRC="$tsrc"; fi
+        done < <(get_template_map)
+        if [[ -z "$TPL_PATH" ]]; then
+            printf "${RED}Template '%s' not found. Run 'orchclaude template list' to see available templates.${NC}\n" "$SUBARG" >&2
+            exit 1
+        fi
+        PROMPT_ARG=$(cat "$TPL_PATH")
+        COMMAND="run"
+        printf "\n${CYAN}Template  : %s (%s)${NC}\n" "$SUBARG" "$TPL_SRC"
+        printf "${DGRAY}Prompt    : loaded from %s${NC}\n\n" "$TPL_PATH"
+        # fall through to run logic
+
+    else
+        printf "${RED}Unknown template subcommand '%s'. Use: list, show, run${NC}\n" "$TPL_SUBCMD" >&2
+        exit 1
+    fi
+fi
+
+# ------------------------------------------------------------------ #
 # Validate command
 # ------------------------------------------------------------------ #
 if [[ "$RESUME_MODE" != "true" && "$COMMAND" != "run" ]]; then
-    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, help, profile${NC}\n" "$COMMAND" >&2
+    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, template, help, profile${NC}\n" "$COMMAND" >&2
     exit 1
 fi
 

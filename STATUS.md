@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Template library: common project types (REST API, HTML tool, Python script) as starter prompts (see Feature Backlog)
+**Next item to implement:** Feature Backlog is complete — all items done. Consider promoting Phase 8 ideas or closing the backlog.
 **Last session date:** 2026-04-20
 **Windows stable:** yes
 **Cross-platform:** no
@@ -97,13 +97,32 @@ It is the first thing any new session should read before touching any code.
 - [x] `orchclaude diff` — shows a clean diff of everything changed in the last run
 - [x] Slack / Discord webhook notification when a run completes
 - [x] Support for .orchclauderc config file in the project root
-- [ ] Template library: common project types (REST API, HTML tool, Python script) as starter prompts
+- [x] Template library: common project types (REST API, HTML tool, Python script) as starter prompts
 
 ---
 
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (template library)
+
+- Implemented Feature Backlog item: Template library — common project types as starter prompts.
+- Created `templates/` directory with three built-in templates:
+  - `rest-api.md` — full CRUD REST API (Express/FastAPI), in-memory store, validation, CORS, README
+  - `html-tool.md` — standalone single-file HTML tool (zero deps, offline, dark/light mode, responsive)
+  - `python-script.md` — Python CLI script (argparse, typed, docstrings, requirements.txt, README)
+- Added `orchclaude template` command to both `orchclaude.ps1` and `orchclaude.sh` with three subcommands:
+  - `orchclaude template list` — lists all built-in and custom templates with one-line descriptions
+  - `orchclaude template show <name>` — prints the full template prompt to terminal
+  - `orchclaude template run <name> [flags]` — loads the template prompt and falls through to the run loop
+- User custom templates: place `.md` files in `~/.orchclaude/templates/` (user templates override built-ins by name)
+- Priority: custom templates override built-in templates of the same name.
+- `package.json` `files` array updated to include `templates/` so templates ship with the npm package.
+- Unknown command errors and fallback help text updated to list the `template` command.
+- Feature Backlog is now 100% complete.
 
 ---
 

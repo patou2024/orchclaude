@@ -51,7 +51,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, help, profile"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, template, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -542,6 +542,103 @@ if ($Command -eq "diff") {
     exit 0
 }
 
+# ---- Template command ----
+if ($Command -eq "template") {
+    $subCmd          = $Prompt.ToLower()
+    $builtinTplDir   = Join-Path $PSScriptRoot "templates"
+    $userTplDir      = Join-Path $env:USERPROFILE ".orchclaude\templates"
+
+    # Collect all templates: built-in first, then user (user can override built-in by name)
+    function Get-TemplateMap {
+        $map = [ordered]@{}
+        foreach ($dir in @($builtinTplDir, $userTplDir)) {
+            if (Test-Path $dir) {
+                Get-ChildItem -Path $dir -Filter "*.md" | Sort-Object Name | ForEach-Object {
+                    $map[$_.BaseName] = @{ Path = $_.FullName; Source = if ($dir -eq $builtinTplDir) { "built-in" } else { "custom" } }
+                }
+            }
+        }
+        return $map
+    }
+
+    if ($subCmd -eq "list") {
+        $map = Get-TemplateMap
+        Write-Host ""
+        Write-Host ("=" * 55) -ForegroundColor Cyan
+        Write-Host "  orchclaude templates" -ForegroundColor Cyan
+        Write-Host ("=" * 55) -ForegroundColor Cyan
+        if ($map.Count -eq 0) {
+            Write-Host "  No templates found." -ForegroundColor Yellow
+            Write-Host "  Built-in templates should be in: $builtinTplDir" -ForegroundColor DarkGray
+        } else {
+            Write-Host ""
+            foreach ($name in $map.Keys) {
+                $entry  = $map[$name]
+                $tag    = if ($entry.Source -eq "custom") { " [custom]" } else { "" }
+                $first  = (Get-Content $entry.Path | Where-Object { $_ -match '\S' } | Select-Object -First 1) -replace '^#+\s*orchclaude template:\s*', ''
+                Write-Host ("  {0,-20} {1}{2}" -f $name, $first, $tag) -ForegroundColor White
+            }
+        }
+        Write-Host ""
+        Write-Host "  Usage:" -ForegroundColor DarkGray
+        Write-Host "    orchclaude template show <name>           -- view the prompt" -ForegroundColor DarkGray
+        Write-Host "    orchclaude template run  <name> [flags]   -- run with this template" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  Add custom templates: place .md files in $userTplDir" -ForegroundColor DarkGray
+        Write-Host ""
+        exit 0
+    }
+
+    elseif ($subCmd -eq "show") {
+        if (-not $SubArg) {
+            Write-Error "Usage: orchclaude template show <name>"
+            exit 1
+        }
+        $map = Get-TemplateMap
+        if (-not $map.ContainsKey($SubArg)) {
+            Write-Error "Template '$SubArg' not found. Run 'orchclaude template list' to see available templates."
+            exit 1
+        }
+        $tplPath = $map[$SubArg].Path
+        Write-Host ""
+        Write-Host ("=" * 55) -ForegroundColor Cyan
+        Write-Host "  Template: $SubArg  ($($map[$SubArg].Source))" -ForegroundColor Cyan
+        Write-Host ("=" * 55) -ForegroundColor Cyan
+        Write-Host ""
+        Get-Content $tplPath | ForEach-Object { Write-Host $_ }
+        Write-Host ""
+        Write-Host ("=" * 55) -ForegroundColor DarkGray
+        Write-Host "  Run it: orchclaude template run $SubArg -t 1h -d <project-dir>" -ForegroundColor DarkGray
+        Write-Host ""
+        exit 0
+    }
+
+    elseif ($subCmd -eq "run") {
+        if (-not $SubArg) {
+            Write-Error "Usage: orchclaude template run <name> [flags]"
+            exit 1
+        }
+        $map = Get-TemplateMap
+        if (-not $map.ContainsKey($SubArg)) {
+            Write-Error "Template '$SubArg' not found. Run 'orchclaude template list' to see available templates."
+            exit 1
+        }
+        $tplPath = $map[$SubArg].Path
+        $Prompt  = Get-Content $tplPath -Raw
+        $Command = "run"
+        Write-Host ""
+        Write-Host "Template  : $SubArg ($($map[$SubArg].Source))" -ForegroundColor Cyan
+        Write-Host "Prompt    : loaded from $tplPath" -ForegroundColor DarkGray
+        Write-Host ""
+        # fall through to run logic below
+    }
+
+    else {
+        Write-Error "Unknown template subcommand '$subCmd'. Use: list, show, run"
+        exit 1
+    }
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -689,7 +786,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude template, orchclaude help, orchclaude profile"
     exit 1
 }
 
