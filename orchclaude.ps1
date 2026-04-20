@@ -66,7 +66,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, history, help, profile"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, history, metrics, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -n"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -804,7 +804,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude history, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude history, orchclaude metrics, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -1127,6 +1127,10 @@ function Show-WorktreeBranchInfo {
 
 function Test-UsageLimitError($text) {
     if (-not $text) { return $false }
+    # Join array output (stderr + stdout mixed) into one searchable string
+    $flat = if ($text -is [array]) { $text -join "`n" } else { "$text" }
+    # Strip ANSI escape codes so color-wrapped messages still match
+    $flat = $flat -replace '\x1b\[[0-9;]*m', ''
     $patterns = @(
         "Claude AI usage limit reached",
         "rate_limit_error",
@@ -1134,14 +1138,17 @@ function Test-UsageLimitError($text) {
         "exceeded your current quota",
         "You have reached your usage limit",
         "out of extra usage",
+        "extra usage",
         "Usage limit reached",
-        "out of usage"
+        "out of usage",
+        "You're out of",
+        "You are out of"
     )
     foreach ($p in $patterns) {
-        if ($text -imatch [regex]::Escape($p)) { return $true }
+        if ($flat -imatch [regex]::Escape($p)) { return $true }
     }
-    if ($text -imatch "usage limit") { return $true }
-    if ($text -imatch "resets \d") { return $true }
+    if ($flat -imatch "usage limit") { return $true }
+    if ($flat -imatch "resets") { return $true }
     return $false
 }
 
