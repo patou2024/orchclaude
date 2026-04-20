@@ -77,9 +77,13 @@ Also copy the updated README.md to C:\Users\pana5\ORCHCLAUDE-GUIDE.md so --help 
 - Update "Last session date" to today's date
 - Add a note under "Notes from Last Session" describing what was done and any issues found
 
-## Step 8 — Commit
+## Step 8 — Sync bin and commit
 
-Run these commands:
+First sync the updated script to the bin folder so the live orchclaude command stays current.
+IMPORTANT: always copy FROM the repo TO bin, never the other direction:
+  Copy-Item C:\Users\pana5\orchclaude\orchclaude.ps1 C:\Users\pana5\bin\orchclaude.ps1 -Force
+
+Then commit and push:
   git add -A
   git commit -m "feat: <item number and name>"
   git push origin master:main
