@@ -755,3 +755,69 @@ These are ideas with no phase assigned yet. They get promoted to a phase when th
 - Custom exit handlers — let users run cleanup scripts after runs complete
 - Slack thread notifications — reply in Slack threads for better conversation threading
 - Model cost estimator hints — let users test prompts on cheaper models before committing to full run
+
+---
+
+## Phase 9 — Reliability & Bug Fixes
+
+Goal: fix known correctness bugs discovered in the code audit (see REWORK.md).
+Each item is a targeted fix with clear acceptance criteria.
+
+---
+
+### 9.1 — Fix classifier missing --dangerously-skip-permissions
+
+**What it is:** The `Get-TaskTier` function calls `claude` without `--dangerously-skip-permissions`.
+In a fresh session Claude prompts for tool permissions. Nobody responds → classifier returns empty
+→ always falls back to "standard" tier, silently breaking smart model routing.
+
+**Implementation:**
+- In `Get-TaskTier`, add `--dangerously-skip-permissions` to the classifier claude call (1 line change)
+- Also add `--output-format text` if available to suppress JSON wrapper noise
+- Apply the same fix to `orchclaude.sh` (bash equivalent)
+
+**Acceptance Criteria:**
+- `Get-TaskTier` call includes `--dangerously-skip-permissions`
+- Running orchclaude with `-v` shows the correct model being selected (haiku for trivial tasks)
+- No permission prompt appears during the classifier call
+- Change applied to both `.ps1` and `.sh`
+
+---
+
+### 9.2 — Fix Write-Session missing flags on resume
+
+**What it is:** When `orchclaude resume` restores a session, 8 flags are not saved or restored:
+`autowait, autoschedule, waittime, agents, model, budget, modelprofile, nobranch`.
+A run that resumes after crash loses its model profile, budget limit, and usage-limit mode.
+
+**Implementation:**
+- Add all 8 missing flags to the `flags` hash in `Write-Session` (PS1 and SH)
+- Add matching restore lines in the resume block (`$autowait = [bool]$session.flags.autowait`, etc.)
+- `Handle-UsageLimit` currently writes its own session object — replace with a call to `Write-Session "usage_limit_paused" $currentIter` + patch in `resumeAfter` field
+
+**Acceptance Criteria:**
+- Run `orchclaude run "test" -t 5m -autowait -budget 0.5 -modelprofile quality -d C:\temp\test`
+- Kill the powershell window mid-run
+- Run `orchclaude resume -d C:\temp\test`
+- Confirm resumed session has `autowait=true`, `budget=0.5`, `modelprofile=quality` in session JSON
+- `Handle-UsageLimit` session JSON includes `startCommit`, `originalWorkDir`, `worktreeBranch`
+
+---
+
+### 9.3 — Fix modelprofile evaluated before profile loading
+
+**What it is:** The `-modelprofile` switch block runs at the top of the script (line ~42),
+before named profile (`-profile`) loading (~line 785). If a saved profile sets `modelprofile`,
+it is loaded AFTER the switch block already ran — so the profile's modelprofile is silently ignored.
+
+**Implementation:**
+- Move the entire modelprofile switch block (~10 lines) to after the profile loading block
+- Same fix in `orchclaude.sh`
+
+**Acceptance Criteria:**
+- Save a profile: `orchclaude profile save testprofile -modelprofile quality`
+- Run: `orchclaude run "hello" -profile testprofile -dryrun`
+- Confirm banner shows `Model: quality (all iterations: opus)`
+- Without fix it shows `auto (classifier + adaptive escalation)`
+
+---

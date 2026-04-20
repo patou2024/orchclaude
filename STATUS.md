@@ -8,9 +8,9 @@ It is the first thing any new session should read before touching any code.
 ## Current State
 
 **Version:** 0.1.0
-**Phase:** 8 — Run History
-**Next item to implement:** Phase 8 is complete. Promote next unscheduled idea from the Feature Backlog or define Phase 9.
-**Last session date:** 2026-04-20
+**Phase:** 9 — Reliability & Bug Fixes
+**Next item to implement:** 9.1 — Fix classifier missing --dangerously-skip-permissions
+**Last session date:** 2026-04-21
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -104,6 +104,14 @@ It is the first thing any new session should read before touching any code.
 ## Phase 8 Checklist
 
 - [x] 8.1 — Run History Log (`orchclaude history`)
+
+---
+
+## Phase 9 Checklist — Reliability & Bug Fixes
+
+- [ ] 9.1 — Fix classifier missing --dangerously-skip-permissions
+- [ ] 9.2 — Fix Write-Session missing flags on resume
+- [ ] 9.3 — Fix modelprofile evaluated before profile loading
 
 ---
 

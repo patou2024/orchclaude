@@ -663,8 +663,8 @@ if ($Command -eq "metrics") {
     $retryCount   = 0
     $escalCount   = 0
 
-    # metrics are newest-first, so reverse for display (oldest-first)
-    $reversed = @($metrics) | Select-Object -Last [int]::MaxValue
+    # metrics are newest-first on disk; sort by iteration number for display (oldest-first)
+    $reversed = @($metrics) | Sort-Object -Property iterationNumber
     foreach ($entry in $reversed) {
         $iterStr    = "$($entry.iterationNumber)".PadLeft(4)
         $modelStr   = "$($entry.modelUsed)".PadRight(9)
@@ -1020,6 +1020,12 @@ function Check-Budget($currentIter = 0) {
     if ($currentCost -gt $script:budget) {
         Write-Host ""
         Write-Log "BUDGET EXCEEDED: estimated cost `$$currentCost exceeds budget `$$($script:budget)" "Red"
+        if ($script:autowait -or $script:autoschedule) {
+            Write-Log "BUDGET: unattended mode - auto-continuing and doubling budget threshold." "Yellow"
+            $script:budget = [math]::Round($script:budget * 2, 4)
+            Write-Log "Budget doubled to `$$($script:budget). Continuing." "Yellow"
+            return
+        }
         $choice = Read-Host "Continue? (y/n)"
         if ($choice -ieq "n") {
             Write-Log "User stopped run at budget limit (`$$currentCost > `$$($script:budget))." "Red"
@@ -1056,17 +1062,58 @@ function Write-History($status, $iterCount) {
         $lastProgress    = if ($progressLines.Count -gt 0) { $progressLines[-1] } else { "" }
         $durationMinutes = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
 
+        # 9.1: aggregate per-iteration metrics into history summary fields
+        $avgTokensPerIter   = 0
+        $avgCostPerIter     = 0
+        $avgElapsedPerIter  = 0
+        $fastestIter        = $null
+        $slowestIter        = $null
+        $mostExpensiveIter  = $null
+        $metricsFile        = Join-Path $workDir "orchclaude-metrics.json"
+        if (Test-Path $metricsFile) {
+            try {
+                $rawMetrics = Get-Content $metricsFile -Raw | ConvertFrom-Json
+                $metricsArr = if ($rawMetrics -is [array]) { @($rawMetrics) } else { @($rawMetrics) }
+                if ($metricsArr.Count -gt 0) {
+                    $sumTokens  = 0
+                    $sumCost    = 0
+                    $sumElapsed = 0
+                    foreach ($m in $metricsArr) {
+                        $sumTokens  += ([int]$m.inputTokens + [int]$m.outputTokens)
+                        $sumCost    += [double]$m.estimatedCostUSD
+                        $sumElapsed += [double]$m.elapsedSeconds
+                    }
+                    $avgTokensPerIter  = [math]::Round(($sumTokens  / $metricsArr.Count) / 100) * 100
+                    $avgCostPerIter    = [math]::Round(($sumCost    / $metricsArr.Count), 3)
+                    $avgElapsedPerIter = [math]::Round(($sumElapsed / $metricsArr.Count), 1)
+
+                    $fast = $metricsArr | Sort-Object { [double]$_.elapsedSeconds }       | Select-Object -First 1
+                    $slow = $metricsArr | Sort-Object { [double]$_.elapsedSeconds }       | Select-Object -Last  1
+                    $exp  = $metricsArr | Sort-Object { [double]$_.estimatedCostUSD }     | Select-Object -Last  1
+                    if ($fast) { $fastestIter       = [int]$fast.iterationNumber }
+                    if ($slow) { $slowestIter       = [int]$slow.iterationNumber }
+                    if ($exp)  { $mostExpensiveIter = [int]$exp.iterationNumber  }
+                }
+            } catch {}
+        }
+
         $entry = [ordered]@{
-            id               = (Get-Date).ToString("yyyyMMdd-HHmmss")
-            date             = (Get-Date).ToString("o")
-            workDir          = $originalWorkDir
-            promptExcerpt    = $excerpt
-            status           = $status
-            iterations       = $iterCount
-            durationMinutes  = $durationMinutes
-            estimatedCostUSD = Get-EstimatedCost
-            progressCount    = $progressLines.Count
-            lastProgress     = $lastProgress
+            id                 = (Get-Date).ToString("yyyyMMdd-HHmmss")
+            date               = (Get-Date).ToString("o")
+            workDir            = $originalWorkDir
+            promptExcerpt      = $excerpt
+            status             = $status
+            iterations         = $iterCount
+            durationMinutes    = $durationMinutes
+            estimatedCostUSD   = Get-EstimatedCost
+            progressCount      = $progressLines.Count
+            lastProgress       = $lastProgress
+            avgTokensPerIter   = $avgTokensPerIter
+            avgCostPerIter     = $avgCostPerIter
+            avgElapsedPerIter  = $avgElapsedPerIter
+            fastestIter        = $fastestIter
+            slowestIter        = $slowestIter
+            mostExpensiveIter  = $mostExpensiveIter
         }
 
         $merged = @($entry) + @($existing)
@@ -1682,7 +1729,7 @@ Your job now is to act as a QA engineer and adversarial tester.
 
         if ($useWorktree) {
             Write-Host ""
-            $mergeChoice = Read-Host "Merge branch '$worktreeBranch' into '$originalBranch'? (y/n)"
+            $mergeChoice = if ($autowait -or $autoschedule) { Write-Log "Unattended mode - skipping worktree merge, branch preserved." "Yellow"; "n" } else { Read-Host "Merge branch '$worktreeBranch' into '$originalBranch'? (y/n)" }
             if ($mergeChoice -ieq "y") {
                 Write-Log "Removing worktree and merging $worktreeBranch into $originalBranch..." "Cyan"
                 & git -C $originalWorkDir worktree remove $worktreePath --force 2>&1 | Out-Null
@@ -1821,7 +1868,8 @@ Continue from where you left off. Output $token when everything is done.
     if (Test-UsageLimitError $output) {
         $shouldResume = Handle-UsageLimit $iter
         if ($shouldResume) {
-            continue  # autowait completed ÔÇö re-run this iteration
+            $iter--  # re-run same iteration (for-loop increments before continue)
+            continue
         }
         break  # Handle-UsageLimit already exited for non-autowait paths
     }
@@ -1932,6 +1980,11 @@ Continue from where you left off. Output $token when everything is done.
         }
         Write-Host ""
 
+        if ($autowait -or $autoschedule) {
+            Write-Log "CIRCUIT BREAKER: unattended mode - auto-continuing." "Yellow"
+            $failureStreak = 0
+        } else {
+
         $userChoice = Read-Host "Continue? (y/n/new prompt)"
 
         if ($userChoice -eq "n") {
@@ -1949,6 +2002,7 @@ Continue from where you left off. Output $token when everything is done.
             Write-Log "User added prompt: $userChoice" "Cyan"
             $failureStreak = 0
         }
+        } # end else (not unattended)
     }
 
     # 7.3: Budget check before next iteration
@@ -2061,7 +2115,7 @@ Write-Banner "ALL DONE  |  $totalTime total" "Green"
 
 if ($useWorktree) {
     Write-Host ""
-    $mergeChoice = Read-Host "Merge branch '$worktreeBranch' into '$originalBranch'? (y/n)"
+    $mergeChoice = if ($autowait -or $autoschedule) { Write-Log "Unattended mode - skipping worktree merge, branch preserved." "Yellow"; "n" } else { Read-Host "Merge branch '$worktreeBranch' into '$originalBranch'? (y/n)" }
     if ($mergeChoice -ieq "y") {
         Write-Log "Removing worktree and merging $worktreeBranch into $originalBranch..." "Cyan"
         & git -C $originalWorkDir worktree remove $worktreePath --force 2>&1 | Out-Null
