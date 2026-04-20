@@ -9,8 +9,8 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** 1.6 — Usage Limit Detection and Auto-Resume (see ROADMAP.md)
-**Last session date:** 2026-04-19
+**Next item to implement:** orchclaude diff — shows a clean diff of everything changed in the last run (see Feature Backlog)
+**Last session date:** 2026-04-20
 **Windows stable:** yes
 **Cross-platform:** no
 
@@ -43,7 +43,7 @@ It is the first thing any new session should read before touching any code.
 - [x] 1.3 — Rate Limiting and Circuit Breaker
 - [x] 1.4 — Token / Cost Estimator
 - [x] 1.5 — `--dry-run` flag
-- [ ] 1.6 — Usage Limit Detection and Auto-Resume
+- [x] 1.6 — Usage Limit Detection and Auto-Resume
 
 ---
 
@@ -104,6 +104,24 @@ It is the first thing any new session should read before touching any code.
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (1.6)
+
+- Implemented 1.6: Usage Limit Detection and Auto-Resume.
+- Added three new flags to both `orchclaude.ps1` and `orchclaude.sh`:
+  - `-autowait` — sleeps in-process with a 10-minute countdown, then automatically continues the loop
+  - `-autoschedule` — on Windows creates a schtasks entry; on Linux/macOS uses `at` command; exits cleanly
+  - `-waittime <minutes>` — overrides default 300-minute (5-hour) wait
+- Added `Test-UsageLimitError` / `test_usage_limit_error`: scans Claude output for 6 patterns (including case-insensitive "usage limit")
+- Added `Handle-UsageLimit` / `handle_usage_limit`: saves session as `usage_limit_paused` (with `resumeAfter` timestamp), then branches into autowait/autoschedule/manual-exit
+- autowait mode prints "Resuming in Xh Ym..." every 10 minutes and returns true to `continue` the loop
+- autoschedule mode (PS1) calls `schtasks /create`; (SH) calls `at` if available
+- `orchclaude resume` now handles `usage_limit_paused` status: checks if current time >= resumeAfter; if not, prints remaining time and exits; if yes, falls through to normal resume
+- Detection is inserted immediately after every `Invoke-Claude` call in the build loop
+- Banner shows: `UsageLimit: autowait | autoschedule | manual resume`
+- Phase 1 checklist is now 100% complete.
 
 ---
 

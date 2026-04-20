@@ -174,6 +174,124 @@ show_worktree_branch_info() {
     write_log "To merge later : git -C \"$ORIGINAL_WORK_DIR\" merge $WORKTREE_BRANCH" "$YELLOW"
 }
 
+test_usage_limit_error() {
+    local text="$1"
+    [[ -z "$text" ]] && return 1
+    if echo "$text" | grep -qF "Claude AI usage limit reached"; then return 0; fi
+    if echo "$text" | grep -qF "rate_limit_error"; then return 0; fi
+    if echo "$text" | grep -qF "overloaded_error"; then return 0; fi
+    if echo "$text" | grep -qF "exceeded your current quota"; then return 0; fi
+    if echo "$text" | grep -qF "You have reached your usage limit"; then return 0; fi
+    if echo "$text" | grep -qi "usage limit"; then return 0; fi
+    return 1
+}
+
+handle_usage_limit() {
+    local current_iter="$1"
+    local now_ts resume_ts
+    now_ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    resume_ts=$(python3 -c "
+from datetime import datetime, timezone, timedelta
+now = datetime.now(timezone.utc)
+resume = now + timedelta(minutes=$WAITTIME)
+print(resume.strftime('%Y-%m-%dT%H:%M:%SZ'))
+" 2>/dev/null || echo "")
+    local resume_time_display
+    resume_time_display=$(python3 -c "
+from datetime import datetime, timezone, timedelta
+now = datetime.now(timezone.utc)
+resume = now + timedelta(minutes=$WAITTIME)
+print(resume.strftime('%H:%M:%S'))
+" 2>/dev/null || echo "?")
+
+    printf "\n"
+    write_log "USAGE LIMIT HIT: Claude usage limit detected at $(date +%H:%M:%S)." "$RED"
+    write_log "Resume possible at $resume_time_display ($WAITTIME minutes from now)." "$YELLOW"
+
+    # Save state
+    local progress_json="[]"
+    if [[ -f "$PROGRESS_FILE" ]]; then
+        progress_json=$(grep -E '\S' "$PROGRESS_FILE" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.dumps([l.rstrip('\n') for l in sys.stdin]))" \
+            2>/dev/null || echo "[]")
+    fi
+    local prompt_json
+    prompt_json=$(printf '%s' "$BASE_PROMPT" | json_dumps_string 2>/dev/null || echo '""')
+    local token_json
+    token_json=$(printf '%s' "$TOKEN" | json_dumps_string 2>/dev/null || echo '"ORCHESTRATION_COMPLETE"')
+
+    python3 - > "$SESSION_FILE" 2>/dev/null <<PYEOF
+import json
+data = {
+    "startTime": "$START_TIME",
+    "lastUpdated": "$now_ts",
+    "status": "usage_limit_paused",
+    "currentIteration": $current_iter,
+    "prompt": $prompt_json,
+    "resumeAfter": "$resume_ts",
+    "pausedAt": "$now_ts",
+    "flags": {
+        "t": "$T",
+        "i": $I,
+        "noqa": $( [[ "$NOQA" == "true" ]] && echo "True" || echo "False"),
+        "token": $token_json,
+        "v": $( [[ "$V" == "true" ]] && echo "True" || echo "False"),
+        "cooldown": $COOLDOWN,
+        "breaker": $BREAKER,
+    },
+    "progressLines": $progress_json,
+}
+print(json.dumps(data, indent=2))
+PYEOF
+    echo "[$(date +%H:%M:%S)] USAGE_LIMIT_PAUSED: iteration $current_iter, resumeAfter=$resume_ts" >> "$LOG_FILE"
+
+    if [[ "$AUTOWAIT" == "true" ]]; then
+        local total_wait_secs=$(( WAITTIME * 60 ))
+        local interval_secs=600
+        local slept=0
+        while [[ "$slept" -lt "$total_wait_secs" ]]; do
+            local remaining=$(( total_wait_secs - slept ))
+            local rem_h=$(( remaining / 3600 ))
+            local rem_m=$(( (remaining % 3600) / 60 ))
+            write_log "Resuming in ${rem_h}h ${rem_m}m... (Ctrl+C to interrupt — session is saved)" "$YELLOW"
+            local sleep_for=$interval_secs
+            [[ "$sleep_for" -gt "$remaining" ]] && sleep_for=$remaining
+            sleep "$sleep_for"
+            slept=$(( slept + sleep_for ))
+        done
+        write_log "Resuming now..." "$GREEN"
+        return 0  # signal: continue the loop
+    elif [[ "$AUTOSCHEDULE" == "true" ]]; then
+        local script_path
+        script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orchclaude.sh"
+        # On Linux/macOS use 'at' if available, otherwise inform user
+        if command -v at > /dev/null 2>&1; then
+            local at_time
+            at_time=$(python3 -c "
+from datetime import datetime, timezone, timedelta
+resume = datetime.now(timezone.utc) + timedelta(minutes=$WAITTIME)
+print(resume.strftime('%H:%M'))
+" 2>/dev/null || echo "now + ${WAITTIME} minutes")
+            echo "bash \"$script_path\" resume -d \"$WORK_DIR\"" | at "$at_time" 2>/dev/null
+            if [[ $? -eq 0 ]]; then
+                write_log "Scheduled resume at $at_time via 'at'. Safe to close this terminal." "$GREEN"
+            else
+                write_log "Failed to schedule with 'at'. Run manually: orchclaude resume -d \"$WORK_DIR\"" "$YELLOW"
+            fi
+        else
+            write_log "'at' command not found. Add a cron entry or run manually: orchclaude resume -d \"$WORK_DIR\"" "$YELLOW"
+        fi
+        show_cost_estimate
+        exit 0
+    else
+        write_log "Session saved. Run 'orchclaude resume' to continue once the limit resets (~$WAITTIME min)." "$YELLOW"
+        write_log "Expected reset at: $resume_time_display" "$YELLOW"
+        show_cost_estimate
+        show_worktree_branch_info
+        exit 0
+    fi
+}
+
 # ------------------------------------------------------------------ #
 # JSON helpers (requires python3)
 # ------------------------------------------------------------------ #
@@ -239,10 +357,11 @@ save_profiles_json() {
 
 profile_exists() {
     local name="$1"
-    python3 -c "
-import json, sys
+    ORCHCLAUDE_PROFILE_NAME="$name" python3 -c "
+import json, sys, os
+pf = os.environ.get('PROFILES_FILE', '')
 d = json.load(open('$PROFILES_FILE')) if __import__('os').path.exists('$PROFILES_FILE') else {}
-sys.exit(0 if '$name' in d else 1)
+sys.exit(0 if os.environ.get('ORCHCLAUDE_PROFILE_NAME','') in d else 1)
 " 2>/dev/null
 }
 
@@ -273,6 +392,9 @@ BUDGET=0
 MODEL_PROFILE=""
 SUBARG=""
 SHOW_HELP=false
+AUTOWAIT=false
+AUTOSCHEDULE=false
+WAITTIME=300
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -293,6 +415,9 @@ while [[ $# -gt 0 ]]; do
         -model)        MODEL_OVERRIDE="${2:-}";   shift 2 ;;
         -budget)       BUDGET="${2:-}";           shift 2 ;;
         -modelprofile) MODEL_PROFILE="${2:-}";    shift 2 ;;
+        -autowait)     AUTOWAIT=true;             shift   ;;
+        -autoschedule) AUTOSCHEDULE=true;         shift   ;;
+        -waittime)     WAITTIME="${2:-300}";      shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -337,7 +462,7 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile\n"
+        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
         printf "          orchclaude profile delete <name>\n"
@@ -357,10 +482,11 @@ if [[ "$COMMAND" == "profile" ]]; then
                 exit 1
             fi
             profiles_json=$(get_profiles_json)
-            updated=$(python3 - <<PYEOF
-import json, sys
+            updated=$(ORCHCLAUDE_PROFILE_NAME="$SUBARG" python3 - <<PYEOF
+import json, sys, os
 d = $profiles_json
-d["$SUBARG"] = {
+name = os.environ.get('ORCHCLAUDE_PROFILE_NAME', '')
+d[name] = {
     "t": "$T",
     "i": $I,
     "d": "$D",
@@ -410,10 +536,10 @@ PYEOF
                 exit 1
             fi
             profiles_json=$(get_profiles_json)
-            updated=$(python3 -c "
-import json
+            updated=$(ORCHCLAUDE_PROFILE_NAME="$SUBARG" python3 -c "
+import json, os
 d = $profiles_json
-d.pop('$SUBARG', None)
+d.pop(os.environ.get('ORCHCLAUDE_PROFILE_NAME',''), None)
 print(json.dumps(d, indent=2))
 ")
             save_profiles_json "$updated"
@@ -551,6 +677,22 @@ if [[ "$COMMAND" == "resume" ]]; then
         printf "${GREEN}Last session already completed.${NC}\n"
         exit 0
     fi
+    if [[ "$session_status" == "usage_limit_paused" ]]; then
+        resume_after=$(python3 -c "import json; print(json.load(open('$SESSION_FILE')).get('resumeAfter',''))" 2>/dev/null || echo "")
+        if [[ -n "$resume_after" ]]; then
+            now_epoch=$(date +%s)
+            resume_epoch=$(python3 -c "from datetime import datetime, timezone; dt=datetime.fromisoformat('$resume_after'.replace('Z','+00:00')); print(int(dt.timestamp()))" 2>/dev/null || echo 0)
+            if [[ "$now_epoch" -lt "$resume_epoch" ]]; then
+                remaining_secs=$((resume_epoch - now_epoch))
+                rem_h=$((remaining_secs / 3600))
+                rem_m=$(((remaining_secs % 3600) / 60))
+                printf "${YELLOW}Not ready yet. Resume scheduled for $(python3 -c "from datetime import datetime,timezone; print(datetime.fromisoformat('$resume_after'.replace('Z','+00:00')).strftime('%H:%M:%S'))" 2>/dev/null). ${rem_h}h ${rem_m}m remaining.${NC}\n"
+                printf "${DGRAY}Run 'orchclaude resume' again after the limit resets.${NC}\n"
+                exit 0
+            fi
+            printf "${CYAN}Usage limit has reset. Resuming now...${NC}\n"
+        fi
+    fi
     printf "${CYAN}Interrupted session found (status: %s). Resuming...${NC}\n" "$session_status"
     eval "$(python3 - <<PYEOF
 import json, shlex
@@ -624,6 +766,10 @@ fi
 # ------------------------------------------------------------------ #
 if [[ ! "$AGENTS" =~ ^[0-9]+$ ]] || [[ "$AGENTS" -lt 1 ]]; then
     printf "${RED}Bad -agents value '%s'. Must be a positive integer.${NC}\n" "$AGENTS" >&2
+    exit 1
+fi
+if [[ "$AGENTS" -gt 20 ]]; then
+    printf "${RED}Bad -agents value '%s'. Maximum supported is 20 parallel agents.${NC}\n" "$AGENTS" >&2
     exit 1
 fi
 if [[ "$AGENTS" -gt 1 && "$NOPLAN" == "true" ]]; then
@@ -830,6 +976,13 @@ else
     write_log "Model     : auto (classifier + adaptive escalation: haiku->sonnet->opus on stall)" "$CYAN"
 fi
 write_log "Budget    : $( [[ "$BUDGET" != "0" && -n "$BUDGET" ]] && echo "\$$BUDGET limit — pause and confirm if cost exceeds threshold" || echo 'disabled (use -budget <amount> to set a limit)' )" "$CYAN"
+if [[ "$AUTOWAIT" == "true" ]]; then
+    write_log "UsageLimit: autowait (sleep in-process, $WAITTIME min wait)" "$CYAN"
+elif [[ "$AUTOSCHEDULE" == "true" ]]; then
+    write_log "UsageLimit: autoschedule (at job, $WAITTIME min wait)" "$CYAN"
+else
+    write_log "UsageLimit: manual resume (orchclaude resume)" "$CYAN"
+fi
 [[ -n "$PROFILE_NAME" ]] && write_log "Profile   : $PROFILE_NAME (loaded from $PROFILES_FILE)" "$CYAN"
 write_log "Log       : $LOG_FILE" "$CYAN"
 [[ "$RESUME_MODE" == "true" ]] && write_log "Resuming  : starting at iteration $START_ITER" "$CYAN"
@@ -1299,6 +1452,14 @@ Continue from where you left off. Output $TOKEN when everything is done."
     TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$FULL_PROMPT")))
     OUTPUT=$(invoke_claude "$FULL_PROMPT" "build_${iter}" "$BUILD_MODEL_ID")
     TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$OUTPUT")))
+
+    # ---- 1.6: Usage Limit Detection ----
+    if test_usage_limit_error "$OUTPUT"; then
+        if handle_usage_limit "$iter"; then
+            continue  # autowait completed — re-run this iteration
+        fi
+        break  # non-autowait paths already called exit
+    fi
 
     [[ "$V" == "true" ]] && printf '%s\n' "$OUTPUT"
 

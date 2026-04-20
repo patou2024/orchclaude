@@ -32,7 +32,10 @@ param(
     [string]$SubArg = "",      # for: orchclaude profile save <name>
     [string]$model = "",        # -model <tier>: light, standard, heavy, or raw model ID (default: auto-classify)
     [double]$budget = 0,        # -budget <amount>: pause and confirm if estimated cost exceeds this (0 = disabled)
-    [string]$modelprofile = ""  # -modelprofile <preset>: fast | balanced | quality | auto
+    [string]$modelprofile = "", # -modelprofile <preset>: fast | balanced | quality | auto
+    [switch]$autowait,          # -autowait       : sleep in-process after usage limit and auto-resume (terminal must stay open)
+    [switch]$autoschedule,      # -autoschedule   : create schtasks entry and exit after usage limit (terminal can close)
+    [int]$waittime = 300        # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
 )
 
 # ---- 7.4: Model Profile Presets ----
@@ -63,7 +66,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
         Write-Host "  Commands: run, resume, status, dashboard, log, explain, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -167,7 +170,12 @@ if ($Command -eq "status") {
         exit 0
     }
 
-    $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+    try {
+        $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "Session file is corrupt or unreadable: $_" -ForegroundColor Red
+        exit 1
+    }
 
     $elapsed = [math]::Round(((Get-Date) - [datetime]$session.startTime).TotalMinutes, 1)
     $lastProgress = if ($session.progressLines.Count -gt 0) { $session.progressLines[-1] } else { "(none)" }
@@ -350,7 +358,8 @@ if ($Command -eq "log") {
                     # sanitize: only allow orchclaude-log*.txt files, no path traversal
                     if ($fileName -and $fileName -match '^orchclaude-log[a-zA-Z0-9_\-]*\.txt$') {
                         $logFile = Join-Path $workDir $fileName
-                        $content = if (Test-Path $logFile) { Get-Content $logFile -Raw } else { "(log file not found)" }
+                        # limit to last 5000 lines to prevent browser hang on large files
+                        $content = if (Test-Path $logFile) { (Get-Content $logFile -Tail 5000) -join "`n" } else { "(log file not found)" }
                     } else {
                         $content = "(invalid or missing file parameter)"
                     }
@@ -461,11 +470,33 @@ if ($Command -eq "resume") {
         exit 0
     }
 
-    $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+    try {
+        $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "Session file is corrupt or unreadable: $_" -ForegroundColor Red
+        exit 1
+    }
 
     if ($session.status -eq "complete") {
         Write-Host "Last session already completed." -ForegroundColor Green
         exit 0
+    }
+
+    if ($session.status -eq "usage_limit_paused") {
+        $resumeAfterStr = $session.resumeAfter
+        if ($resumeAfterStr) {
+            $resumeAt = [datetime]$resumeAfterStr
+            $now = Get-Date
+            if ($now -lt $resumeAt) {
+                $remaining = $resumeAt - $now
+                $remH = [math]::Floor($remaining.TotalHours)
+                $remM = $remaining.Minutes
+                Write-Host "Not ready yet. Resume scheduled for $($resumeAt.ToString('HH:mm:ss')). ${remH}h ${remM}m remaining." -ForegroundColor Yellow
+                Write-Host "Run 'orchclaude resume' again after the limit resets, or wait for autowait/autoschedule to fire." -ForegroundColor DarkGray
+                exit 0
+            }
+            Write-Host "Usage limit has reset. Resuming now..." -ForegroundColor Cyan
+        }
     }
 
     Write-Host "Interrupted session found (status: $($session.status)). Resuming from iteration $($session.currentIteration + 1)..." -ForegroundColor Cyan
@@ -509,6 +540,10 @@ if ($profile -and -not $resumeMode) {
 # ---- Validate agents flag ----
 if ($agents -lt 1) {
     Write-Error "Bad -agents value '$agents'. Must be a positive integer."
+    exit 1
+}
+if ($agents -gt 20) {
+    Write-Error "Bad -agents value '$agents'. Maximum supported is 20 parallel agents."
     exit 1
 }
 if ($agents -gt 1 -and $noplan) {
@@ -556,6 +591,12 @@ if (-not $resumeMode) {
 # ---- Validate max iterations ----
 if ($i -le 0) {
     Write-Error "Bad -i value '$i'. Must be a positive integer."
+    exit 1
+}
+
+# ---- Validate cooldown ----
+if ($cooldown -lt 0) {
+    Write-Error "Bad -cooldown value '$cooldown'. Must be >= 0 (use 0 to disable)."
     exit 1
 }
 
@@ -748,6 +789,102 @@ function Show-WorktreeBranchInfo {
     Write-Log "To merge later : git -C `"$originalWorkDir`" merge $worktreeBranch" "Yellow"
 }
 
+function Test-UsageLimitError($text) {
+    if (-not $text) { return $false }
+    $patterns = @(
+        "Claude AI usage limit reached",
+        "rate_limit_error",
+        "overloaded_error",
+        "exceeded your current quota",
+        "You have reached your usage limit"
+    )
+    foreach ($p in $patterns) {
+        if ($text -match [regex]::Escape($p)) { return $true }
+    }
+    if ($text -imatch "usage limit") { return $true }
+    return $false
+}
+
+function Handle-UsageLimit($currentIter) {
+    $now      = Get-Date
+    $resumeAt = $now.AddMinutes($script:waittime)
+
+    Write-Host ""
+    Write-Log "USAGE LIMIT HIT: Claude usage limit detected at $($now.ToString('HH:mm:ss'))." "Red"
+    Write-Log "Resume possible at $($resumeAt.ToString('HH:mm:ss')) ($($script:waittime) minutes from now)." "Yellow"
+
+    # Save state with usage_limit_paused
+    $progressLines = if (Test-Path $progressFile) {
+        @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+    } else { @() }
+
+    $sessionData = [ordered]@{
+        startTime        = $startTime.ToString("o")
+        lastUpdated      = $now.ToString("o")
+        status           = "usage_limit_paused"
+        currentIteration = $currentIter
+        prompt           = $basePrompt
+        resumeAfter      = $resumeAt.ToString("o")
+        pausedAt         = $now.ToString("o")
+        flags            = [ordered]@{
+            t        = $t
+            i        = $i
+            noqa     = [bool]$noqa
+            token    = $token
+            v        = [bool]$v
+            cooldown = $cooldown
+            breaker  = $breaker
+        }
+        progressLines    = $progressLines
+    }
+    $sessionData | ConvertTo-Json -Depth 5 | Set-Content $sessionFile -Encoding UTF8
+    Add-Content $logFile "[$($now.ToString('HH:mm:ss'))] USAGE_LIMIT_PAUSED: iteration $currentIter, resumeAfter=$($resumeAt.ToString('o'))"
+
+    if ($script:autowait) {
+        $totalWaitSecs   = $script:waittime * 60
+        $intervalSecs    = 600  # 10 minutes
+        $slept           = 0
+
+        while ($slept -lt $totalWaitSecs) {
+            $remaining = $totalWaitSecs - $slept
+            $remH = [math]::Floor($remaining / 3600)
+            $remM = [math]::Floor(($remaining % 3600) / 60)
+            Write-Log "Resuming in ${remH}h ${remM}m... (Ctrl+C to interrupt — session is saved)" "Yellow"
+            $sleepFor = [math]::Min($intervalSecs, $remaining)
+            Start-Sleep -Seconds $sleepFor
+            $slept += $sleepFor
+        }
+
+        Write-Log "Resuming now..." "Green"
+        return $true  # signal caller to continue the loop
+
+    } elseif ($script:autoschedule) {
+        $resumeTime = $resumeAt.ToString("HH:mm")
+        $scriptPath = if ($MyInvocation.ScriptName) { $MyInvocation.ScriptName } else { $PSCommandPath }
+        $resumeCmd  = "powershell.exe -ExecutionPolicy Bypass -File `"$scriptPath`" resume -d `"$workDir`""
+        $taskName   = "orchclaude-resume-$($now.ToString('yyyyMMdd-HHmmss'))"
+
+        $schtasksResult = & schtasks /create /tn $taskName /tr $resumeCmd /sc once /st $resumeTime /f 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Scheduled resume at $resumeTime as task '$taskName'." "Green"
+            Write-Log "Safe to close this terminal. The task will auto-run." "Green"
+            Add-Content $logFile "[$($now.ToString('HH:mm:ss'))] AUTOSCHEDULE: task '$taskName' created for $resumeTime"
+        } else {
+            Write-Log "Failed to create scheduled task: $schtasksResult" "Red"
+            Write-Log "Run manually after limit resets: orchclaude resume -d `"$workDir`"" "Yellow"
+        }
+
+        Show-CostEstimate
+        exit 0
+    } else {
+        Write-Log "Session saved. Run 'orchclaude resume' to continue once the limit resets (~$($script:waittime) min)." "Yellow"
+        Write-Log "Expected reset at: $($resumeAt.ToString('HH:mm:ss'))" "Yellow"
+        Show-CostEstimate
+        Show-WorktreeBranchInfo
+        exit 0
+    }
+}
+
 function Invoke-Claude($prompt, $iterLabel, $modelId = "") {
     $promptFile = Join-Path $env:TEMP "orchclaude_prompt_${PID}_$iterLabel.txt"
     $prompt | Set-Content $promptFile -Encoding UTF8
@@ -845,6 +982,8 @@ $modelBannerVal = if ($modelprofile -ne "") {
 }
 Write-Log "Model     : $modelBannerVal" "Cyan"
 Write-Log "Budget    : $(if ($budget -gt 0) { "`$$budget limit — pause and confirm if cost exceeds threshold" } else { 'disabled (use -budget <amount> to set a limit)' })" "Cyan"
+$usageLimitMode = if ($autowait) { "autowait (sleep in-process, $waittime min wait)" } elseif ($autoschedule) { "autoschedule (schtasks entry, $waittime min wait)" } else { "manual resume (orchclaude resume)" }
+Write-Log "UsageLimit: $usageLimitMode" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -1313,6 +1452,15 @@ Continue from where you left off. Output $token when everything is done.
     $totalInputWords += Get-WordCount $fullPrompt
     $output = Invoke-Claude $fullPrompt "build_$iter" $buildModelId
     $totalOutputWords += Get-WordCount $output
+
+    # ---- 1.6: Usage Limit Detection ----
+    if (Test-UsageLimitError $output) {
+        $shouldResume = Handle-UsageLimit $iter
+        if ($shouldResume) {
+            continue  # autowait completed — re-run this iteration
+        }
+        break  # Handle-UsageLimit already exited for non-autowait paths
+    }
 
     if ($v) { Write-Host $output }
 
