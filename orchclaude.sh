@@ -95,6 +95,7 @@ check_budget() {
             show_cost_estimate
             write_session "timeout" "$current_iter"
             show_worktree_branch_info
+            send_webhook "failed"
             exit 1
         else
             BUDGET=$(python3 -c "print(round($BUDGET * 2, 4))" 2>/dev/null || echo "$(( ${BUDGET%.*} * 2 ))")
@@ -173,6 +174,54 @@ show_worktree_branch_info() {
     write_log "Worktree path  : $WORKTREE_PATH" "$YELLOW"
     write_log "To merge later : git -C \"$ORIGINAL_WORK_DIR\" merge $WORKTREE_BRANCH" "$YELLOW"
 }
+
+send_webhook() {
+    local status="$1"
+    [[ -z "$WEBHOOK_URL" ]] && return
+    [[ "$WEBHOOK_SENT" == "true" ]] && return
+    WEBHOOK_SENT=true
+
+    local elapsed_min last_prog prog_count cost msg payload
+    elapsed_min=$(python3 -c "import time; print(round((time.time() - $START_EPOCH) / 60, 1))" 2>/dev/null || echo "?")
+    cost=$(python3 -c "
+iw=$TOTAL_INPUT_WORDS; ow=$TOTAL_OUTPUT_WORDS
+it=round(iw*1.33); ot=round(ow*1.33)
+print(round(it/1000000*3 + ot/1000000*15, 4))
+" 2>/dev/null || echo "?")
+    last_prog="(none)"
+    prog_count=0
+    if [[ -f "$PROGRESS_FILE" ]]; then
+        prog_count=$(grep -c '\S' "$PROGRESS_FILE" 2>/dev/null || echo 0)
+        last_prog=$(grep '\S' "$PROGRESS_FILE" 2>/dev/null | tail -1 || echo "(none)")
+    fi
+
+    case "$status" in
+        complete) emoji=":white_check_mark:" ;;
+        timeout)  emoji=":hourglass:" ;;
+        *)        emoji=":x:" ;;
+    esac
+
+    msg="$emoji orchclaude run $status
+Work dir: $WORK_DIR
+Elapsed: ${elapsed_min}m
+Progress lines: $prog_count
+Estimated cost: \$$cost
+Last progress: $last_prog"
+
+    if echo "$WEBHOOK_URL" | grep -q "discord"; then
+        payload=$(python3 -c "import json,sys; print(json.dumps({'content': sys.argv[1]}))" "$msg" 2>/dev/null || echo '{"content":"orchclaude run finished"}')
+    else
+        payload=$(python3 -c "import json,sys; print(json.dumps({'text': sys.argv[1]}))" "$msg" 2>/dev/null || echo '{"text":"orchclaude run finished"}')
+    fi
+
+    if command -v curl &>/dev/null; then
+        curl -s -X POST -H "Content-Type: application/json; charset=utf-8" -d "$payload" "$WEBHOOK_URL" >/dev/null 2>&1 &&             write_log "Webhook sent ($status)." "$DGRAY" ||             write_log "Webhook send failed." "$YELLOW"
+    else
+        write_log "Webhook skipped: curl not available." "$YELLOW"
+    fi
+}
+
+WEBHOOK_SENT=false
 
 test_usage_limit_error() {
     local text="$1"
@@ -398,6 +447,7 @@ SHOW_HELP=false
 AUTOWAIT=false
 AUTOSCHEDULE=false
 WAITTIME=300
+WEBHOOK_URL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -421,6 +471,7 @@ while [[ $# -gt 0 ]]; do
         -autowait)     AUTOWAIT=true;             shift   ;;
         -autoschedule) AUTOSCHEDULE=true;         shift   ;;
         -waittime)     WAITTIME="${2:-300}";      shift 2 ;;
+        -webhook)      WEBHOOK_URL="${2:-}";        shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -466,7 +517,7 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
         printf "\nCommands: run, resume, status, explain, diff, help, profile\n"
-        printf "Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime\n"
+        printf "Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
         printf "          orchclaude profile delete <name>\n"
@@ -502,6 +553,7 @@ d[name] = {
     "noplan": $( [[ "$NOPLAN" == "true" ]] && echo "True" || echo "False"),
     "nobranch": $( [[ "$NOBRANCH" == "true" ]] && echo "True" || echo "False"),
     "agents": $AGENTS,
+    "webhook": $(printf '%s' "$WEBHOOK_URL" | json_dumps_string),
 }
 print(json.dumps(d, indent=2))
 PYEOF
@@ -1091,6 +1143,7 @@ else
     write_log "UsageLimit: manual resume (orchclaude resume)" "$CYAN"
 fi
 [[ -n "$PROFILE_NAME" ]] && write_log "Profile   : $PROFILE_NAME (loaded from $PROFILES_FILE)" "$CYAN"
+write_log "Webhook   : $( [[ -n "$WEBHOOK_URL" ]] && echo "$WEBHOOK_URL (Slack/Discord/generic JSON on run end)" || echo 'disabled (use -webhook <url> to notify on completion)' )" "$CYAN"
 write_log "Log       : $LOG_FILE" "$CYAN"
 [[ "$RESUME_MODE" == "true" ]] && write_log "Resuming  : starting at iteration $START_ITER" "$CYAN"
 
@@ -1301,6 +1354,7 @@ $(printf '%s\n' "${DEPENDENT_LINES[@]}")"
         write_session "timeout" "$I"
         show_cost_estimate
         show_worktree_branch_info
+        send_webhook "timeout"
         exit 1
     fi
 
@@ -1354,6 +1408,7 @@ $DEPENDENT_SECTION
         write_session "timeout" "$I"
         show_cost_estimate
         show_worktree_branch_info
+        send_webhook "failed"
         exit 1
     fi
 
@@ -1369,6 +1424,7 @@ $DEPENDENT_SECTION
             write_banner "TIMEOUT before QA phase could run" "$RED"
             show_cost_estimate
             show_worktree_branch_info
+            send_webhook "timeout"
             exit 1
         fi
         remaining_min=$(python3 -c "print(round(($TIMEOUT_SECONDS - $elapsed) / 60, 1))" 2>/dev/null || echo "?")
@@ -1430,6 +1486,7 @@ Your job now is to act as a QA engineer and adversarial tester.
     TOTAL_TIME=$(python3 -c "s=$((SECONDS - SCRIPT_START)); print(f'{s//60:02d}:{s%60:02d}')" 2>/dev/null || echo "?")
     show_cost_estimate
     write_banner "ALL DONE  |  $TOTAL_TIME total" "$GREEN"
+    send_webhook "complete"
 
     if [[ "$USE_WORKTREE" == "true" ]]; then
         printf "\n"
@@ -1475,6 +1532,7 @@ for (( iter=START_ITER; iter<=I; iter++ )); do
         write_banner "TIMEOUT in build phase after ${elapsed_min} min" "$RED"
         write_session "timeout" "$iter"
         show_cost_estimate
+        send_webhook "timeout"
         break
     fi
 
@@ -1660,6 +1718,7 @@ Continue from where you left off. Output $TOKEN when everything is done."
                 write_session "timeout" "$iter"
                 show_cost_estimate
                 show_worktree_branch_info
+                send_webhook "failed"
                 exit 1
                 ;;
             ""|y)
@@ -1688,6 +1747,7 @@ if [[ "$COMPLETED" != "true" ]]; then
     write_session "timeout" "$I"
     write_banner "BUILD INCOMPLETE — did not finish. See log: $LOG_FILE" "$RED"
     show_cost_estimate
+    send_webhook "failed"
     show_worktree_branch_info
     printf "${YELLOW}  Run 'orchclaude resume' to continue this session.${NC}\n"
     exit 1
@@ -1710,6 +1770,7 @@ else
         write_banner "TIMEOUT before QA phase could run" "$RED"
         show_cost_estimate
         show_worktree_branch_info
+        send_webhook "timeout"
         exit 1
     fi
 
@@ -1777,6 +1838,7 @@ TOTAL_ELAPSED=$((SECONDS - SCRIPT_START))
 TOTAL_TIME=$(python3 -c "s=$TOTAL_ELAPSED; print(f'{s//60:02d}:{s%60:02d}')" 2>/dev/null || echo "?")
 show_cost_estimate
 write_banner "ALL DONE  |  $TOTAL_TIME total" "$GREEN"
+send_webhook "complete"
 
 if [[ "$USE_WORKTREE" == "true" ]]; then
     printf "\n"

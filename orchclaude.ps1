@@ -1,4 +1,4 @@
-﻿# orchclaude - Claude Code Orchestrator CLI
+# orchclaude - Claude Code Orchestrator CLI
 # Usage: orchclaude run "prompt" -t30m
 #        orchclaude run -f project.md -t2h
 #        orchclaude run "prompt" -t1h -i 60 -v -d "C:\Projects\MyApp"
@@ -35,7 +35,8 @@ param(
     [string]$modelprofile = "", # -modelprofile <preset>: fast | balanced | quality | auto
     [switch]$autowait,          # -autowait       : sleep in-process after usage limit and auto-resume (terminal must stay open)
     [switch]$autoschedule,      # -autoschedule   : create schtasks entry and exit after usage limit (terminal can close)
-    [int]$waittime = 300        # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
+    [int]$waittime = 300,       # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
+    [string]$webhook = ""       # -webhook <url>  : POST a JSON summary to this URL when the run finishes (Slack/Discord/generic)
 )
 
 # ---- 7.4: Model Profile Presets ----
@@ -66,7 +67,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
         Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -115,6 +116,7 @@ if ($Command -eq "profile") {
             noplan   = [bool]$noplan
             nobranch = [bool]$nobranch
             agents   = $agents
+            webhook  = $webhook
         }
         Save-Profiles $profiles
         Write-Host "Profile '$SubArg' saved to $profilesFile" -ForegroundColor Green
@@ -634,6 +636,7 @@ if ($profile -and -not $resumeMode) {
     if (-not $PSBoundParameters.ContainsKey('noplan'))   { $noplan   = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
     if (-not $PSBoundParameters.ContainsKey('nobranch')) { $nobranch = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
     if (-not $PSBoundParameters.ContainsKey('agents'))   { $agents   = if ($p.agents) { [int]$p.agents } else { 1 } }
+    if (-not $PSBoundParameters.ContainsKey('webhook'))  { $webhook  = if ($p.webhook) { "$($p.webhook)" } else { "" } }
 }
 
 # ---- Validate agents flag ----
@@ -771,6 +774,7 @@ $timeoutDisplay = $t
 
 $totalInputWords  = 0
 $totalOutputWords = 0
+$script:webhookSent = $false
 
 # ---- Session file helpers ----
 function Write-Session($status, $currentIteration) {
@@ -866,6 +870,61 @@ function Show-CostEstimate {
     Write-Log $line "Cyan"
 }
 
+function Send-Webhook($status) {
+    if (-not $webhook) { return }
+    if ($script:webhookSent) { return }   # only fire once per run
+    $script:webhookSent = $true
+
+    try {
+        $elapsedSec  = [int]((Get-Date) - $startTime).TotalSeconds
+        $elapsedMin  = [math]::Round($elapsedSec / 60, 1)
+        $cost        = Get-EstimatedCost
+        $lastProg    = "(none)"
+        $progCount   = 0
+        if (Test-Path $progressFile) {
+            $progLines = @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
+            $progCount = $progLines.Count
+            if ($progCount -gt 0) { $lastProg = $progLines[-1] }
+        }
+
+        $statusEmoji = switch ($status) {
+            "complete" { ":white_check_mark:" }
+            "timeout"  { ":hourglass:" }
+            "failed"   { ":x:" }
+            default    { ":information_source:" }
+        }
+
+        $msg = "$statusEmoji orchclaude run $status`n" +
+               "Work dir: $workDir`n" +
+               "Elapsed: ${elapsedMin}m`n" +
+               "Progress lines: $progCount`n" +
+               "Estimated cost: `$$cost`n" +
+               "Last progress: $lastProg"
+
+        if ($webhook -match "hooks\.slack\.com") {
+            $payload = @{ text = $msg } | ConvertTo-Json -Compress
+        } elseif ($webhook -match "discord(app)?\.com/api/webhooks") {
+            $payload = @{ content = $msg } | ConvertTo-Json -Compress
+        } else {
+            $payload = [ordered]@{
+                event          = "orchclaude_run"
+                status         = $status
+                workDir        = $workDir
+                elapsedSeconds = $elapsedSec
+                progressCount  = $progCount
+                estimatedCost  = $cost
+                lastProgress   = $lastProg
+                message        = $msg
+            } | ConvertTo-Json -Compress
+        }
+
+        Invoke-RestMethod -Uri $webhook -Method Post -ContentType "application/json; charset=utf-8" -Body $payload -TimeoutSec 10 | Out-Null
+        Write-Log "Webhook sent ($status)." "DarkCyan"
+    } catch {
+        Write-Log "Webhook send failed: $_" "DarkYellow"
+    }
+}
+
 function Check-Budget($currentIter = 0) {
     if ($script:budget -le 0) { return }
     $currentCost = Get-EstimatedCost
@@ -878,6 +937,7 @@ function Check-Budget($currentIter = 0) {
             Show-CostEstimate
             Write-Session "timeout" $currentIter
             Show-WorktreeBranchInfo
+            Send-Webhook "failed"
             exit 1
         } else {
             $script:budget = [math]::Round($script:budget * 2, 4)
@@ -1088,6 +1148,7 @@ Write-Log "Model     : $modelBannerVal" "Cyan"
 Write-Log "Budget    : $(if ($budget -gt 0) { "`$$budget limit ÔÇö pause and confirm if cost exceeds threshold" } else { 'disabled (use -budget <amount> to set a limit)' })" "Cyan"
 $usageLimitMode = if ($autowait) { "autowait (sleep in-process, $waittime min wait)" } elseif ($autoschedule) { "autoschedule (schtasks entry, $waittime min wait)" } else { "manual resume (orchclaude resume)" }
 Write-Log "UsageLimit: $usageLimitMode" "Cyan"
+Write-Log "Webhook   : $(if ($webhook) { "$webhook (Slack/Discord/generic JSON on run end)" } else { 'disabled (use -webhook <url> to notify on completion)' })" "Cyan"
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -1297,6 +1358,7 @@ Remember: work ONLY on your assigned subtasks above.
             Write-Session "timeout" $i
             Show-CostEstimate
             Show-WorktreeBranchInfo
+            Send-Webhook "timeout"
             exit 1
         }
 
@@ -1353,6 +1415,7 @@ $dependentSection
             Write-Session "timeout" $i
             Show-CostEstimate
             Show-WorktreeBranchInfo
+            Send-Webhook "failed"
             exit 1
         }
 
@@ -1368,6 +1431,7 @@ $dependentSection
                 Write-Banner "TIMEOUT before QA phase could run" "Red"
                 Show-CostEstimate
                 Show-WorktreeBranchInfo
+                Send-Webhook "timeout"
                 exit 1
             }
             $remaining = [math]::Round(($timeoutSeconds - $elapsed) / 60, 1)
@@ -1428,6 +1492,7 @@ Your job now is to act as a QA engineer and adversarial tester.
         $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
         Show-CostEstimate
         Write-Banner "ALL DONE  |  $totalTime total" "Green"
+        Send-Webhook "complete"
 
         if ($useWorktree) {
             Write-Host ""
@@ -1474,6 +1539,7 @@ for ($iter = $startIter; $iter -le $i; $iter++) {
         Write-Banner "TIMEOUT in build phase after $([math]::Round($elapsed/60,1)) min" "Red"
         Write-Session "timeout" $iter
         Show-CostEstimate
+        Send-Webhook "timeout"
         break
     }
 
@@ -1664,6 +1730,7 @@ Continue from where you left off. Output $token when everything is done.
             Write-Session "timeout" $iter
             Show-CostEstimate
             Show-WorktreeBranchInfo
+            Send-Webhook "failed"
             exit 1
         } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
             Write-Log "User chose to continue. Resetting failure streak." "Cyan"
@@ -1686,6 +1753,7 @@ if (-not $completed) {
     Write-Session "timeout" $i
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
     Show-CostEstimate
+    Send-Webhook "failed"
     Show-WorktreeBranchInfo
     Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
@@ -1707,6 +1775,7 @@ if ($noqa) {
         Write-Session "timeout" $i
         Write-Banner "TIMEOUT before QA phase could run" "Red"
         Show-CostEstimate
+        Send-Webhook "timeout"
         Show-WorktreeBranchInfo
         exit 1
     }
@@ -1778,6 +1847,7 @@ Your job now is to act as a QA engineer and adversarial tester.
 Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
 Show-CostEstimate
+Send-Webhook "complete"
 Write-Banner "ALL DONE  |  $totalTime total" "Green"
 
 if ($useWorktree) {

@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Slack / Discord webhook notification when a run completes (see Feature Backlog)
+**Next item to implement:** Support for .orchclauderc config file in the project root (see Feature Backlog)
 **Last session date:** 2026-04-20
 **Windows stable:** yes
 **Cross-platform:** no
@@ -95,7 +95,7 @@ It is the first thing any new session should read before touching any code.
 
 - [x] `orchclaude explain` — runs Claude in read-only mode and asks it to explain what it built
 - [x] `orchclaude diff` — shows a clean diff of everything changed in the last run
-- [ ] Slack / Discord webhook notification when a run completes
+- [x] Slack / Discord webhook notification when a run completes
 - [ ] Support for .orchclauderc config file in the project root
 - [ ] Template library: common project types (REST API, HTML tool, Python script) as starter prompts
 
@@ -122,6 +122,20 @@ It is the first thing any new session should read before touching any code.
 - Detection is inserted immediately after every `Invoke-Claude` call in the build loop
 - Banner shows: `UsageLimit: autowait | autoschedule | manual resume`
 - Phase 1 checklist is now 100% complete.
+
+---
+
+## Notes from Last Session (webhook)
+
+- Completed Feature Backlog item: Slack / Discord webhook notification when a run completes.
+- The PS1 side was already fully implemented: `Send-Webhook` defined, `-webhook` flag parsed, called at all exit points.
+- The SH side had `send_webhook()` defined and `-webhook` parsed, but the function was never called anywhere.
+- Added `send_webhook` calls at all 9 exit points in `orchclaude.sh`:
+  - Parallel agents: timeout before merge, merge failed, timeout before QA, ALL DONE (complete)
+  - Sequential build: circuit breaker "n" (failed), build incomplete after loop (timeout), timeout before QA, ALL DONE (complete)
+  - Budget stop (failed) — was already wired from a prior session
+- Added webhook banner line to the SH startup banner (matching PS1 line 1151).
+- Feature parity between PS1 and SH is now complete for this feature.
 
 ---
 
