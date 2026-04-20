@@ -4,6 +4,7 @@ Keeps Claude running on a project until it finishes - not until Claude decides i
 After the build, automatically runs a QA pass that checks edge cases and fixes issues.
 
 ---
+#EVERYTHING IS STILL WIP(Claude is running auto updates whenever my usage limit isnt hit(atleast thats the current goal to implement rn), also not tested on linux/mac os yet(so everything in this readme shall be taken with a grain of salt(or a spoon)))
 
 ## Install via npm (recommended)
 
