@@ -5,6 +5,10 @@ Run it with:
 
     orchclaude run -f C:\Users\pana5\orchclaude\BUILDSELF.md -t 2h -d C:\Users\pana5\orchclaude
 
+For autonomous overnight runs (auto-resumes after usage limit, no human needed):
+
+    orchclaude run -f C:\Users\pana5\orchclaude\BUILDSELF.md -t 2h -d C:\Users\pana5\orchclaude -autowait -waittime 300
+
 ---
 
 ## Task
@@ -96,3 +100,5 @@ ORCHESTRATION_COMPLETE
 - Never mark an item complete in STATUS.md unless every acceptance criterion passes.
 - Never push broken code. If tests fail, fix them first.
 - The goal is slow and correct, not fast and broken.
+- When running in unattended mode (-autowait), answer all y/n prompts automatically with y.
+- After any resume, re-read STATUS.md first to confirm the correct next item before doing anything.

@@ -230,6 +230,22 @@ autoschedule mode:
 - If not yet: print "Not ready yet. Resume scheduled for [resumeAfter]. Xh Ym remaining."
 - If ready: proceed with normal resume flow
 
+**Additional requirements (added after initial spec):**
+
+Auto-confirm prompts:
+- During `-autowait` mode, any prompt Claude outputs that expects a y/n response must be
+  automatically answered "y" so the run never stalls waiting for human input.
+- This includes merge prompts, branch prompts, budget confirmation, and circuit breaker prompts.
+- Add an internal `$unattended` flag that is automatically set to `$true` when `-autowait` or
+  `-autoschedule` is active. All interactive prompts check `$unattended` and skip to "y" if set.
+- Print a notice when auto-confirm fires: "AUTO: confirmed '<prompt>' (unattended mode)"
+
+Resume state check:
+- On resume after a usage-limit pause, orchclaude must re-read STATUS.md (if the work dir is
+  the orchclaude repo) or re-read orchclaude-progress.txt to confirm where it left off before
+  sending the next iteration. This prevents re-doing already-completed work.
+- Print on resume: "Resuming from iteration N. Last progress: <last PROGRESS line>"
+
 **Acceptance Criteria:**
 - Usage limit errors are detected and do not crash the run with an unhelpful message
 - `-autowait` sleeps and resumes automatically without user interaction
@@ -237,6 +253,8 @@ autoschedule mode:
 - `orchclaude resume` on a paused session correctly waits if time has not elapsed
 - `-waittime 10` overrides to a 10-minute wait (useful for testing)
 - State is fully preserved across the pause: prompt, progress, iteration count
+- In `-autowait`/`-autoschedule` mode, all y/n prompts are auto-confirmed and logged
+- On resume, iteration count and last progress line are printed before the next Claude call
 - Documented in README and --help with examples
 
 ---

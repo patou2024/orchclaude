@@ -160,6 +160,7 @@ function esc(s) {
 function fmtTime(iso) {
   if (!iso) return 'N/A';
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'Invalid date';
   return d.toLocaleTimeString() + ' ' + d.toLocaleDateString();
 }
 

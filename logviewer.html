@@ -238,8 +238,16 @@ function esc(s) {
 function highlight(text, term) {
   if (!term) return esc(text);
   const safeT = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return esc(text).replace(new RegExp(safeT.replace(/&amp;|&lt;|&gt;/g, s => '\\'+s), 'gi'),
-    m => `<mark>${m}</mark>`);
+  // Split on match boundaries so we can escape each part independently,
+  // avoiding any XSS from HTML-special chars in either the text or the term.
+  try {
+    const re = new RegExp(`(${safeT})`, 'gi');
+    return text.split(re).map((part, i) =>
+      i % 2 === 1 ? `<mark>${esc(part)}</mark>` : esc(part)
+    ).join('');
+  } catch {
+    return esc(text);
+  }
 }
 
 // ---- render log ----
