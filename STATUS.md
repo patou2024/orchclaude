@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** orchclaude diff — shows a clean diff of everything changed in the last run (see Feature Backlog)
+**Next item to implement:** Slack / Discord webhook notification when a run completes (see Feature Backlog)
 **Last session date:** 2026-04-20
 **Windows stable:** yes
 **Cross-platform:** no
@@ -94,7 +94,7 @@ It is the first thing any new session should read before touching any code.
 ## Feature Backlog Checklist
 
 - [x] `orchclaude explain` — runs Claude in read-only mode and asks it to explain what it built
-- [ ] `orchclaude diff` — shows a clean diff of everything changed in the last run
+- [x] `orchclaude diff` — shows a clean diff of everything changed in the last run
 - [ ] Slack / Discord webhook notification when a run completes
 - [ ] Support for .orchclauderc config file in the project root
 - [ ] Template library: common project types (REST API, HTML tool, Python script) as starter prompts
@@ -122,6 +122,21 @@ It is the first thing any new session should read before touching any code.
 - Detection is inserted immediately after every `Invoke-Claude` call in the build loop
 - Banner shows: `UsageLimit: autowait | autoschedule | manual resume`
 - Phase 1 checklist is now 100% complete.
+
+---
+
+## Notes from Last Session (diff command)
+
+- Implemented Feature Backlog item: `orchclaude diff`.
+- New command added to both `orchclaude.ps1` and `orchclaude.sh`.
+- At run start (when a git repo is detected), captures `git rev-parse HEAD` into `$startCommit` / `$START_COMMIT` before any worktree or file changes.
+- `Write-Session` / `write_session` now stores three new fields in `orchclaude-session.json`: `startCommit`, `originalWorkDir`, `worktreeBranch`.
+- `orchclaude diff [-d <path>] [-v]`:
+  - Reads the session file and resolves the end ref: uses the worktree branch if it still exists, otherwise falls back to `HEAD`.
+  - Runs `git diff --stat <startCommit>..<endRef>` for a files-changed summary.
+  - With `-v`, runs `git diff <startCommit>..<endRef>` with color-coded output (green additions, red deletions, cyan hunks).
+  - Gracefully falls back to showing progress lines when no git info is available (no-git directories, old sessions).
+- Help text and unknown-command error updated to include `diff`.
 
 ---
 

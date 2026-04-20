@@ -65,7 +65,7 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, help, profile"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -456,6 +456,105 @@ $sessionContext
     exit 0
 }
 
+# ---- Diff command ----
+if ($Command -eq "diff") {
+    $workDir     = if ($d) { $d } else { (Get-Location).Path }
+    $sessionFile = Join-Path $workDir "orchclaude-session.json"
+
+    Write-Host ""
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host "  orchclaude diff" -ForegroundColor Cyan
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+
+    if (-not (Test-Path $sessionFile)) {
+        Write-Host "  No session file found in $workDir" -ForegroundColor Yellow
+        Write-Host "  Run orchclaude first, then use orchclaude diff." -ForegroundColor DarkGray
+        Write-Host ""
+        exit 0
+    }
+
+    try {
+        $session = Get-Content $sessionFile -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "Session file is corrupt or unreadable: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    $diffStartCommit  = $session.startCommit
+    $diffOrigDir      = if ($session.originalWorkDir) { $session.originalWorkDir } else { $workDir }
+    $diffBranch       = $session.worktreeBranch
+
+    Write-Host "  Session   : $($session.status)  |  Iteration: $($session.currentIteration)" -ForegroundColor DarkGray
+    if ($diffBranch) { Write-Host "  Branch    : $diffBranch" -ForegroundColor DarkGray }
+    Write-Host ("=" * 55) -ForegroundColor Cyan
+    Write-Host ""
+
+    if (-not $diffStartCommit) {
+        Write-Host "No git diff available — this session was run without git tracking," -ForegroundColor Yellow
+        Write-Host "or it was created with an older version of orchclaude." -ForegroundColor Yellow
+        Write-Host ""
+        if ($session.progressLines -and $session.progressLines.Count -gt 0) {
+            Write-Host "PROGRESS from this run:" -ForegroundColor Cyan
+            Write-Host ("-" * 55) -ForegroundColor Cyan
+            $session.progressLines | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
+        }
+        exit 0
+    }
+
+    # Verify git repo
+    $null = & git -C $diffOrigDir rev-parse --git-dir 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Not a git repository: $diffOrigDir" -ForegroundColor Yellow
+        exit 0
+    }
+
+    # Determine end ref: prefer worktree branch if it still exists; else HEAD
+    $endRef = "HEAD"
+    if ($diffBranch) {
+        $null = & git -C $diffOrigDir rev-parse --verify $diffBranch 2>&1
+        if ($LASTEXITCODE -eq 0) { $endRef = $diffBranch }
+    }
+
+    Write-Host "From : $diffStartCommit" -ForegroundColor DarkGray
+    Write-Host "To   : $endRef" -ForegroundColor DarkGray
+    Write-Host ""
+
+    # Summary stat
+    $diffStat = & git -C $diffOrigDir diff --stat "${diffStartCommit}..${endRef}" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # Retry against HEAD in case branch was merged and deleted
+        $diffStat = & git -C $diffOrigDir diff --stat "${diffStartCommit}" 2>&1
+        $endRef = "HEAD"
+    }
+
+    $statText = ($diffStat -join "`n").Trim()
+    if (-not $statText) {
+        Write-Host "No changes detected between $diffStartCommit and $endRef." -ForegroundColor Yellow
+        exit 0
+    }
+
+    Write-Host "FILES CHANGED:" -ForegroundColor Cyan
+    Write-Host ("-" * 55) -ForegroundColor Cyan
+    $diffStat | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
+    Write-Host ""
+
+    if ($v) {
+        Write-Host "FULL DIFF:" -ForegroundColor Cyan
+        Write-Host ("-" * 55) -ForegroundColor Cyan
+        $fullDiff = & git -C $diffOrigDir diff "${diffStartCommit}..${endRef}" 2>&1
+        $fullDiff | ForEach-Object {
+            if     ($_ -match "^\+[^+]")  { Write-Host $_ -ForegroundColor Green }
+            elseif ($_ -match "^-[^-]")   { Write-Host $_ -ForegroundColor Red }
+            elseif ($_ -match "^@@")      { Write-Host $_ -ForegroundColor Cyan }
+            else                          { Write-Host $_ }
+        }
+    } else {
+        Write-Host "(Run 'orchclaude diff -v' to see the full line-by-line diff)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    exit 0
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -557,7 +656,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -611,11 +710,13 @@ $worktreePath    = ""
 $worktreeBranch  = ""
 $originalBranch  = ""
 $originalWorkDir = $workDir
+$startCommit     = ""
 
 if (-not $nobranch -and -not $resumeMode -and -not $dryrun) {
     $null = & git -C $workDir rev-parse --git-dir 2>&1
     if ($LASTEXITCODE -eq 0) {
         $isGitRepo      = $true
+        $startCommit    = (& git -C $workDir rev-parse HEAD 2>&1).Trim()
         $gitRoot        = (& git -C $workDir rev-parse --show-toplevel 2>&1).Trim().Replace('/', '\')
         $originalBranch = (& git -C $workDir branch --show-current 2>&1).Trim()
         if (-not $originalBranch) { $originalBranch = "HEAD" }
@@ -693,6 +794,9 @@ function Write-Session($status, $currentIteration) {
             breaker  = $breaker
         }
         progressLines    = $progressLines
+        startCommit      = $startCommit
+        originalWorkDir  = $originalWorkDir
+        worktreeBranch   = $worktreeBranch
     }
 
     $sessionData | ConvertTo-Json -Depth 5 | Set-Content $sessionFile -Encoding UTF8

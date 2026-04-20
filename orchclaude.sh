@@ -333,6 +333,9 @@ data = {
         "breaker": $BREAKER,
     },
     "progressLines": $progress_json,
+    "startCommit": "$START_COMMIT",
+    "originalWorkDir": "$ORIGINAL_WORK_DIR",
+    "worktreeBranch": "$WORKTREE_BRANCH",
 }
 print(json.dumps(data, indent=2))
 PYEOF
@@ -462,7 +465,8 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nFlags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime\n"
+        printf "\nCommands: run, resume, status, explain, diff, help, profile\n"
+        printf "Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
         printf "          orchclaude profile delete <name>\n"
@@ -659,6 +663,107 @@ $SESSION_CONTEXT"
 fi
 
 # ------------------------------------------------------------------ #
+# Diff command
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "diff" ]]; then
+    WORK_DIR="${D:-$(pwd)}"
+    SESSION_FILE="$WORK_DIR/orchclaude-session.json"
+
+    printf "\n${CYAN}%s${NC}\n" "======================================================="
+    printf "${CYAN}  orchclaude diff${NC}\n"
+    printf "${CYAN}%s${NC}\n" "======================================================="
+
+    if [[ ! -f "$SESSION_FILE" ]]; then
+        printf "${YELLOW}  No session file found in %s${NC}\n" "$WORK_DIR"
+        printf "${DGRAY}  Run orchclaude first, then use orchclaude diff.${NC}\n\n"
+        exit 0
+    fi
+
+    DIFF_START_COMMIT=$(python3 -c "import json; print(json.load(open('$SESSION_FILE')).get('startCommit',''))" 2>/dev/null || echo "")
+    DIFF_ORIG_DIR=$(python3 -c "import json; print(json.load(open('$SESSION_FILE')).get('originalWorkDir','$WORK_DIR'))" 2>/dev/null || echo "$WORK_DIR")
+    DIFF_BRANCH=$(python3 -c "import json; print(json.load(open('$SESSION_FILE')).get('worktreeBranch',''))" 2>/dev/null || echo "")
+    DIFF_STATUS=$(python3 -c "import json; d=json.load(open('$SESSION_FILE')); print(d.get('status','?'), d.get('currentIteration',0))" 2>/dev/null || echo "? 0")
+
+    printf "${DGRAY}  Session   : %s${NC}\n" "$DIFF_STATUS"
+    [[ -n "$DIFF_BRANCH" ]] && printf "${DGRAY}  Branch    : %s${NC}\n" "$DIFF_BRANCH"
+    printf "${CYAN}%s${NC}\n\n" "======================================================="
+
+    if [[ -z "$DIFF_START_COMMIT" ]]; then
+        printf "${YELLOW}No git diff available — this session was run without git tracking,${NC}\n"
+        printf "${YELLOW}or it was created with an older version of orchclaude.${NC}\n\n"
+        PROGRESS_LINES=$(python3 -c "
+import json
+d = json.load(open('$SESSION_FILE'))
+lines = d.get('progressLines', [])
+for l in lines:
+    print(l)
+" 2>/dev/null || true)
+        if [[ -n "$PROGRESS_LINES" ]]; then
+            printf "${CYAN}PROGRESS from this run:${NC}\n"
+            printf "${CYAN}%s${NC}\n" "-------------------------------------------------------"
+            echo "$PROGRESS_LINES" | while IFS= read -r line; do
+                printf "  %s\n" "$line"
+            done
+        fi
+        exit 0
+    fi
+
+    # Verify git repo
+    if ! git -C "$DIFF_ORIG_DIR" rev-parse --git-dir > /dev/null 2>&1; then
+        printf "${YELLOW}Not a git repository: %s${NC}\n" "$DIFF_ORIG_DIR"
+        exit 0
+    fi
+
+    # Determine end ref
+    END_REF="HEAD"
+    if [[ -n "$DIFF_BRANCH" ]]; then
+        if git -C "$DIFF_ORIG_DIR" rev-parse --verify "$DIFF_BRANCH" > /dev/null 2>&1; then
+            END_REF="$DIFF_BRANCH"
+        fi
+    fi
+
+    printf "${DGRAY}From : %s${NC}\n" "$DIFF_START_COMMIT"
+    printf "${DGRAY}To   : %s${NC}\n\n" "$END_REF"
+
+    # Summary stat
+    DIFF_STAT=$(git -C "$DIFF_ORIG_DIR" diff --stat "${DIFF_START_COMMIT}..${END_REF}" 2>&1)
+    if [[ $? -ne 0 || -z "$(echo "$DIFF_STAT" | tr -d '[:space:]')" ]]; then
+        DIFF_STAT=$(git -C "$DIFF_ORIG_DIR" diff --stat "${DIFF_START_COMMIT}" 2>&1)
+        END_REF="HEAD"
+    fi
+
+    if [[ -z "$(echo "$DIFF_STAT" | tr -d '[:space:]')" ]]; then
+        printf "${YELLOW}No changes detected between %s and %s.${NC}\n" "$DIFF_START_COMMIT" "$END_REF"
+        exit 0
+    fi
+
+    printf "${CYAN}FILES CHANGED:${NC}\n"
+    printf "${CYAN}%s${NC}\n" "-------------------------------------------------------"
+    echo "$DIFF_STAT" | while IFS= read -r line; do printf "  %s\n" "$line"; done
+    printf "\n"
+
+    if [[ "$V" == "true" ]]; then
+        printf "${CYAN}FULL DIFF:${NC}\n"
+        printf "${CYAN}%s${NC}\n" "-------------------------------------------------------"
+        git -C "$DIFF_ORIG_DIR" diff "${DIFF_START_COMMIT}..${END_REF}" 2>&1 | while IFS= read -r line; do
+            if [[ "$line" =~ ^\+[^\+] ]]; then
+                printf "${GREEN}%s${NC}\n" "$line"
+            elif [[ "$line" =~ ^-[^-] ]]; then
+                printf "${RED}%s${NC}\n" "$line"
+            elif [[ "$line" =~ ^@@ ]]; then
+                printf "${CYAN}%s${NC}\n" "$line"
+            else
+                printf "%s\n" "$line"
+            fi
+        done
+    else
+        printf "${DGRAY}(Run 'orchclaude diff -v' to see the full line-by-line diff)${NC}\n"
+    fi
+    printf "\n"
+    exit 0
+fi
+
+# ------------------------------------------------------------------ #
 # Resume command
 # ------------------------------------------------------------------ #
 RESUME_MODE=false
@@ -785,7 +890,7 @@ fi
 # Validate command
 # ------------------------------------------------------------------ #
 if [[ "$RESUME_MODE" != "true" && "$COMMAND" != "run" ]]; then
-    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, help, profile${NC}\n" "$COMMAND" >&2
+    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, help, profile${NC}\n" "$COMMAND" >&2
     exit 1
 fi
 
@@ -848,10 +953,12 @@ WORKTREE_PATH=""
 WORKTREE_BRANCH=""
 ORIGINAL_BRANCH=""
 ORIGINAL_WORK_DIR="$WORK_DIR"
+START_COMMIT=""
 
 if [[ "$NOBRANCH" != "true" && "$RESUME_MODE" != "true" && "$DRYRUN" != "true" ]]; then
     if git -C "$WORK_DIR" rev-parse --git-dir > /dev/null 2>&1; then
         IS_GIT_REPO=true
+        START_COMMIT=$(git -C "$WORK_DIR" rev-parse HEAD 2>/dev/null || echo "")
         GIT_ROOT=$(git -C "$WORK_DIR" rev-parse --show-toplevel 2>/dev/null)
         ORIGINAL_BRANCH=$(git -C "$WORK_DIR" branch --show-current 2>/dev/null || echo "HEAD")
         [[ -z "$ORIGINAL_BRANCH" ]] && ORIGINAL_BRANCH="HEAD"
