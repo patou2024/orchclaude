@@ -8,8 +8,8 @@ It is the first thing any new session should read before touching any code.
 ## Current State
 
 **Version:** 0.1.0
-**Phase:** 4 — Multi-Agent Execution
-**Next item to implement:** Feature Backlog is complete — all items done. Consider promoting Phase 8 ideas or closing the backlog.
+**Phase:** 8 — Run History
+**Next item to implement:** Phase 8 is complete. Promote next unscheduled idea from the Feature Backlog or define Phase 9.
 **Last session date:** 2026-04-20
 **Windows stable:** yes
 **Cross-platform:** no
@@ -101,9 +101,37 @@ It is the first thing any new session should read before touching any code.
 
 ---
 
+## Phase 8 Checklist
+
+- [x] 8.1 — Run History Log (`orchclaude history`)
+
+---
+
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (8.1 Run History)
+
+- Implemented 8.1: Run History Log (`orchclaude history`).
+- Most of the machinery was already in place from a prior partial session (function bodies + command handler existed in both PS1 and SH). This session closed the gaps.
+- History file: `~/.orchclaude/history.json` (Windows: `%USERPROFILE%\.orchclaude\history.json`). JSON array of entries, newest-first within each write, capped at 200 entries.
+- Entry fields: `id, date, workDir, promptExcerpt, status, iterations, durationMinutes, estimatedCostUSD, progressCount, lastProgress`.
+- `Write-History` / `write_history` called at every run exit point (same places `Send-Webhook` / `send_webhook` fires): complete, timeout, failed, usage_limit_paused. Wrapped in try/catch so history errors never crash the run.
+- Missing PS1 coverage closed this session:
+  - Added `Write-History "failed" $iter` after circuit-breaker user "n" stop (was Write-Session-only).
+  - Added `Write-History "complete" $i` at the final sequential ALL DONE exit (was Write-Session-only).
+- `orchclaude history` command:
+  - Default shows last 20 entries newest-first in a one-line-per-run table with color-coded status (COMPLETE=Green, TIMEOUT/FAILED=Red, USAGE_LIMIT_PAUSED=Yellow).
+  - `-n <number>` overrides the 20 cap (flag was already declared in the PS1 param block).
+  - `orchclaude history clear` wipes the file after a `y/n` confirmation.
+  - Friendly "No history yet" message if the file is missing.
+- README.md updated: syntax section now lists `orchclaude history [-n <count>]` and `orchclaude history clear`; new RUN HISTORY section under Flags; new "Review past runs" example.
+- PS1 help text and unknown-command fallback already included `history` from the prior partial implementation.
+- SH side was missing `history` from both the help command listing (line ~596) and the unknown-command error (line ~1415); added in this session for parity.
+- Verified end-to-end on Windows: `orchclaude history`, `orchclaude history -n 2`, `orchclaude history clear` (with `n` to cancel), and the empty-state message all behave correctly.
 
 ---
 

@@ -593,9 +593,8 @@ if ($Command -eq "history") {
 
     $limit      = if ($n -gt 0) { $n } else { 20 }
     $totalCount = $history.Count
-    # newest first
-    $allReversed = @($history)[($totalCount - 1)..0]
-    $toShow      = $allReversed | Select-Object -First $limit
+    # file layout is newest-first; just take the first N
+    $toShow     = @(@($history) | Select-Object -First $limit)
 
     Write-Host ""
     Write-Host "orchclaude run history  (showing $($toShow.Count) of $totalCount runs, newest first)" -ForegroundColor Cyan
@@ -630,6 +629,76 @@ if ($Command -eq "history") {
     Write-Host ""
     Write-Host "  Use 'orchclaude history -n 50' to show more entries." -ForegroundColor DarkGray
     Write-Host "  Use 'orchclaude history clear' to wipe the history." -ForegroundColor DarkGray
+    Write-Host ""
+    exit 0
+}
+
+# ---- 9.1: Metrics command ----
+if ($Command -eq "metrics") {
+    $workDir      = if ($d) { $d } else { (Get-Location).Path }
+    $metricsFile  = Join-Path $workDir "orchclaude-metrics.json"
+
+    if (-not (Test-Path $metricsFile)) {
+        Write-Host "No metrics found. Metrics are recorded after each run in the work directory." -ForegroundColor Yellow
+        exit 0
+    }
+
+    try {
+        $raw     = Get-Content $metricsFile -Raw | ConvertFrom-Json
+        $metrics = if ($raw -is [array]) { @($raw) } else { @($raw) }
+    } catch {
+        Write-Host "Metrics file is corrupt or unreadable: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "Iteration Metrics for $workDir" -ForegroundColor Cyan
+    Write-Host ("-" * 110) -ForegroundColor Cyan
+    Write-Host "  Iter  Model     Elapsed  Input    Output   Cost     Progress  Status" -ForegroundColor Cyan
+    Write-Host ("-" * 110) -ForegroundColor Cyan
+
+    $totalSeconds = 0
+    $totalCost    = 0
+    $successCount = 0
+    $retryCount   = 0
+    $escalCount   = 0
+
+    # metrics are newest-first, so reverse for display (oldest-first)
+    $reversed = @($metrics) | Select-Object -Last [int]::MaxValue
+    foreach ($entry in $reversed) {
+        $iterStr    = "$($entry.iterationNumber)".PadLeft(4)
+        $modelStr   = "$($entry.modelUsed)".PadRight(9)
+        $elapStr    = "$([math]::Round($entry.elapsedSeconds, 1))s".PadLeft(8)
+        $inStr      = "$($entry.inputTokens)".PadLeft(8)
+        $outStr     = "$($entry.outputTokens)".PadLeft(8)
+        $costStr    = "`$$([math]::Round($entry.estimatedCostUSD, 4))".PadLeft(8)
+        $progStr    = if ($entry.hadProgress) { "$($entry.progressLines.Count) lines" } else { "none" }
+        $progStr    = $progStr.PadLeft(9)
+        $statusStr  = $entry.status.PadRight(9)
+
+        $statusColor = switch ($entry.status) {
+            "success"   { "Green"  }
+            "escalated" { "Yellow" }
+            "retry"     { "White"  }
+            "failed"    { "Red"    }
+            default     { "White"  }
+        }
+
+        $line = "  $iterStr  $modelStr  $elapStr  $inStr  $outStr  $costStr  $progStr  "
+        Write-Host $line -NoNewline
+        Write-Host $statusStr -ForegroundColor $statusColor
+
+        $totalSeconds += $entry.elapsedSeconds
+        $totalCost    += $entry.estimatedCostUSD
+        if ($entry.status -eq "success")   { $successCount++ }
+        elseif ($entry.status -eq "retry") { $retryCount++ }
+        elseif ($entry.status -eq "escalated") { $escalCount++ }
+    }
+
+    Write-Host ("-" * 110) -ForegroundColor Cyan
+    $avgTime = if ($metrics.Count -gt 0) { [math]::Round($totalSeconds / $metrics.Count, 1) } else { 0 }
+    $summary = "  Summary: $($metrics.Count) iterations | $([math]::Round($totalSeconds, 1))s total | `$$([math]::Round($totalCost, 4)) total | $avgTime s avg/iter | $successCount success, $retryCount retry, $escalCount escalated"
+    Write-Host $summary -ForegroundColor Cyan
     Write-Host ""
     exit 0
 }
@@ -1000,11 +1069,52 @@ function Write-History($status, $iterCount) {
             lastProgress     = $lastProgress
         }
 
-        $merged = @($existing) + @($entry)
-        if ($merged.Count -gt 200) { $merged = $merged | Select-Object -Last 200 }
+        $merged = @($entry) + @($existing)
+        if ($merged.Count -gt 200) { $merged = $merged | Select-Object -First 200 }
         $merged | ConvertTo-Json -Depth 5 | Set-Content $historyFile -Encoding UTF8
     } catch {
         Write-Host "[history] Warning: could not write history entry: $_" -ForegroundColor DarkGray
+    }
+}
+
+# ---- 9.1: Per-Iteration Performance Metrics ----
+function Write-Metrics($iterNum, $modelUsed, $iterStartTime, $iterElapsedSeconds, $inputWords, $outputWords, $hadProgress, $progressLines, $iterStatus) {
+    try {
+        $metricsFile = Join-Path $workDir "orchclaude-metrics.json"
+
+        $inputTokens  = [math]::Round($inputWords * 1.33)
+        $outputTokens = [math]::Round($outputWords * 1.33)
+        $iterCostUSD  = [math]::Round(($inputTokens / 1000000 * 3) + ($outputTokens / 1000000 * 15), 4)
+
+        $entry = [ordered]@{
+            iterationNumber = $iterNum
+            modelUsed       = $modelUsed
+            startTime       = $iterStartTime.ToString("o")
+            elapsedSeconds  = [math]::Round($iterElapsedSeconds, 2)
+            inputTokens     = $inputTokens
+            outputTokens    = $outputTokens
+            estimatedCostUSD = $iterCostUSD
+            hadProgress     = [bool]$hadProgress
+            progressLines   = @($progressLines)
+            status          = $iterStatus
+        }
+
+        $existing = @()
+        if (Test-Path $metricsFile) {
+            try {
+                $raw = Get-Content $metricsFile -Raw | ConvertFrom-Json
+                if ($raw -is [array]) { $existing = @($raw) } elseif ($raw) { $existing = @($raw) }
+            } catch { $existing = @() }
+        }
+
+        $merged = @($entry) + @($existing)
+        $merged | ConvertTo-Json -Depth 5 | Set-Content $metricsFile -Encoding UTF8
+
+        # Log metrics line for readability
+        $metricsLine = "[METRICS] Iter $iterNum : $modelUsed | $([math]::Round($iterElapsedSeconds,1))s | $inputTokens→$outputTokens tokens | `$$iterCostUSD | $($progressLines.Count) progress lines"
+        Add-Content $logFile $metricsLine
+    } catch {
+        Write-Host "[metrics] Warning: could not write metrics entry: $_" -ForegroundColor DarkGray
     }
 }
 
@@ -1687,9 +1797,18 @@ Continue from where you left off. Output $token when everything is done.
     Write-Log "MODEL: $buildLabel (build iter $iter)" "DarkCyan"
     Add-Content $logFile "[$((Get-Date).ToString('HH:mm:ss'))] MODEL: $buildLabel (build iter $iter)"
     Write-Log "Calling Claude (build)..." "Yellow"
+
+    # 9.1: Capture iteration metrics start
+    $iterStartTime = Get-Date
+    $iterInputWordCount = Get-WordCount $fullPrompt
+
     $totalInputWords += Get-WordCount $fullPrompt
     $output = Invoke-Claude $fullPrompt "build_$iter" $buildModelId
+    $iterOutputWordCount = Get-WordCount $output
     $totalOutputWords += Get-WordCount $output
+
+    # 9.1: Calculate iteration elapsed time
+    $iterElapsedSeconds = ((Get-Date) - $iterStartTime).TotalSeconds
 
     # ---- 1.6: Usage Limit Detection ----
     if (Test-UsageLimitError $output) {
@@ -1702,9 +1821,12 @@ Continue from where you left off. Output $token when everything is done.
 
     if ($v) { Write-Host $output }
 
+    # 9.1: Capture PROGRESS lines from this iteration
+    $iterProgressLines = @()
     ($output -split "`n") | Where-Object { $_ -match "^PROGRESS:" } | ForEach-Object {
         Add-Content $progressFile $_
         Write-Log $_ "Green"
+        $iterProgressLines += $_
     }
 
     Add-Content $logFile "--- Build iteration $iter ---"
@@ -1764,6 +1886,18 @@ Continue from where you left off. Output $token when everything is done.
         }
     }
 
+    # 9.1: Write iteration metrics
+    $iterStatus = if ($progressCountAfter -gt $progressCountBefore) {
+        "success"
+    } elseif ($escalatedToStandard -and $buildTier -eq "light") {
+        "escalated"
+    } elseif ($escalatedToHeavy -and $buildTier -eq "standard") {
+        "escalated"
+    } else {
+        "retry"
+    }
+    Write-Metrics $iter $buildLabel $iterStartTime $iterElapsedSeconds $iterInputWordCount $iterOutputWordCount ($progressCountAfter -gt $progressCountBefore) $iterProgressLines $iterStatus
+
     # Update session file after every iteration
     Write-Session "running" $iter
 
@@ -1797,6 +1931,7 @@ Continue from where you left off. Output $token when everything is done.
             Write-Log "User stopped run at circuit breaker." "Red"
             Write-Session "timeout" $iter
             Show-CostEstimate
+            Write-History "failed" $iter
             Show-WorktreeBranchInfo
             exit 1
         } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
@@ -1914,6 +2049,7 @@ Your job now is to act as a QA engineer and adversarial tester.
 Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
 Show-CostEstimate
+Write-History "complete" $i
 Write-Banner "ALL DONE  |  $totalTime total" "Green"
 
 if ($useWorktree) {

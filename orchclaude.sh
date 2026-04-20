@@ -96,6 +96,7 @@ check_budget() {
             write_session "timeout" "$current_iter"
             show_worktree_branch_info
             send_webhook "failed"
+            write_history "failed"
             exit 1
         else
             BUDGET=$(python3 -c "print(round($BUDGET * 2, 4))" 2>/dev/null || echo "$(( ${BUDGET%.*} * 2 ))")
@@ -222,6 +223,88 @@ Last progress: $last_prog"
 }
 
 WEBHOOK_SENT=false
+
+write_history() {
+    local status="$1"
+    local hist_dir="$HOME/.orchclaude"
+    local hist_file="$hist_dir/history.json"
+    mkdir -p "$hist_dir" 2>/dev/null || true
+    OC_STATUS="$status" \
+    OC_HIST_FILE="$hist_file" \
+    OC_START_EPOCH="$START_EPOCH" \
+    OC_INPUT_WORDS="$TOTAL_INPUT_WORDS" \
+    OC_OUTPUT_WORDS="$TOTAL_OUTPUT_WORDS" \
+    OC_PROGRESS_FILE="$PROGRESS_FILE" \
+    OC_SESSION_FILE="$SESSION_FILE" \
+    OC_WORK_DIR="$WORK_DIR" \
+    OC_BASE_PROMPT="$BASE_PROMPT" \
+    python3 - <<'PYEOF' 2>/dev/null || true
+import json, os
+from datetime import datetime, timezone
+
+start_epoch = float(os.environ.get("OC_START_EPOCH", "0") or "0")
+elapsed_min = round((datetime.now(timezone.utc).timestamp() - start_epoch) / 60, 1) if start_epoch else 0
+
+iw = float(os.environ.get("OC_INPUT_WORDS",  "0") or "0")
+ow = float(os.environ.get("OC_OUTPUT_WORDS", "0") or "0")
+it = round(iw * 1.33); ot = round(ow * 1.33)
+cost = round(it / 1_000_000 * 3 + ot / 1_000_000 * 15, 4)
+
+last_prog = ""; prog_count = 0
+progress_file = os.environ.get("OC_PROGRESS_FILE", "")
+if progress_file and os.path.exists(progress_file):
+    with open(progress_file, encoding="utf-8", errors="replace") as f:
+        lines = [l.rstrip("\n") for l in f if l.strip()]
+    prog_count = len(lines)
+    last_prog = lines[-1] if lines else ""
+
+iter_count = 0
+session_file = os.environ.get("OC_SESSION_FILE", "")
+if session_file and os.path.exists(session_file):
+    try:
+        with open(session_file, encoding="utf-8") as f:
+            s = json.load(f)
+        iter_count = int(s.get("currentIteration", 0))
+    except Exception:
+        pass
+
+base_prompt = os.environ.get("OC_BASE_PROMPT", "") or ""
+excerpt = base_prompt[:120] + ("..." if len(base_prompt) > 120 else "")
+excerpt = excerpt.replace("\n", " ").replace("\r", "")
+
+run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
+
+entry = {
+    "id": run_id,
+    "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "workDir": os.environ.get("OC_WORK_DIR", ""),
+    "promptExcerpt": excerpt,
+    "status": os.environ.get("OC_STATUS", "unknown"),
+    "iterations": iter_count,
+    "durationMinutes": elapsed_min,
+    "estimatedCostUSD": cost,
+    "progressCount": prog_count,
+    "lastProgress": last_prog,
+}
+
+hist_file = os.environ["OC_HIST_FILE"]
+history = []
+if os.path.exists(hist_file):
+    try:
+        with open(hist_file, encoding="utf-8") as f:
+            raw = json.load(f)
+        history = raw if isinstance(raw, list) else [raw]
+    except Exception:
+        pass
+
+history = [entry] + history
+if len(history) > 200:
+    history = history[:200]
+
+with open(hist_file, "w", encoding="utf-8") as f:
+    json.dump(history, f, indent=2, ensure_ascii=False)
+PYEOF
+}
 
 test_usage_limit_error() {
     local text="$1"
@@ -448,6 +531,7 @@ AUTOWAIT=false
 AUTOSCHEDULE=false
 WAITTIME=300
 WEBHOOK_URL=""
+HISTORY_N=20
 
 # CLI tracking: true when flag was explicitly passed on command line
 _CLI_T=false; _CLI_I=false; _CLI_V=false; _CLI_D=false; _CLI_NOQA=false
@@ -479,6 +563,7 @@ while [[ $# -gt 0 ]]; do
         -autoschedule) AUTOSCHEDULE=true;       _CLI_AUTOSCHEDULE=true; shift   ;;
         -waittime)     WAITTIME="${2:-300}";    _CLI_WAITTIME=true;     shift 2 ;;
         -webhook)      WEBHOOK_URL="${2:-}";    _CLI_WEBHOOK=true;      shift 2 ;;
+        -n)            HISTORY_N="${2:-20}";                            shift 2 ;;
         --help|-help|-h) SHOW_HELP=true; shift   ;;
         -*)
             printf "${RED}Unknown flag: %s${NC}\n" "$1" >&2
@@ -508,7 +593,7 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nCommands: run, resume, status, explain, diff, help, profile\n"
+        printf "\nCommands: run, resume, status, explain, diff, template, history, help, profile\n"
         printf "Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
@@ -808,6 +893,230 @@ for l in lines:
 fi
 
 # ------------------------------------------------------------------ #
+# Template command
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "template" ]]; then
+    # Resolve orchclaude.sh's own directory (works whether invoked directly,
+    # via a symlink, or through npm's bin shim).
+    _src="${BASH_SOURCE[0]}"
+    while [[ -h "$_src" ]]; do
+        _dir=$(cd -P "$(dirname "$_src")" && pwd)
+        _src=$(readlink "$_src")
+        [[ "$_src" != /* ]] && _src="$_dir/$_src"
+    done
+    SCRIPT_DIR=$(cd -P "$(dirname "$_src")" && pwd)
+    BUILTIN_TPL_DIR="$SCRIPT_DIR/templates"
+    USER_TPL_DIR="$HOME/.orchclaude/templates"
+
+    SUB_CMD=$(printf '%s' "${PROMPT_ARG:-}" | tr '[:upper:]' '[:lower:]')
+    TPL_NAME="${SUBARG:-}"
+
+    # Resolve a template name to its full path; prefers user override.
+    resolve_template_path() {
+        local name="$1"
+        [[ -z "$name" ]] && return 1
+        if [[ -f "$USER_TPL_DIR/$name.md"    ]]; then printf '%s\n' "$USER_TPL_DIR/$name.md";    return 0; fi
+        if [[ -f "$BUILTIN_TPL_DIR/$name.md" ]]; then printf '%s\n' "$BUILTIN_TPL_DIR/$name.md"; return 0; fi
+        return 1
+    }
+
+    resolve_template_source() {
+        local name="$1"
+        if   [[ -f "$USER_TPL_DIR/$name.md"    ]]; then printf 'custom\n'
+        elif [[ -f "$BUILTIN_TPL_DIR/$name.md" ]]; then printf 'built-in\n'
+        else                                            printf 'unknown\n'
+        fi
+    }
+
+    list_templates() {
+        # Print every template name once; user-dir entries silently shadow built-ins.
+        {
+            [[ -d "$BUILTIN_TPL_DIR" ]] && find "$BUILTIN_TPL_DIR" -maxdepth 1 -name '*.md' -type f 2>/dev/null
+            [[ -d "$USER_TPL_DIR"    ]] && find "$USER_TPL_DIR"    -maxdepth 1 -name '*.md' -type f 2>/dev/null
+        } | awk -F/ '{ n=$NF; sub(/\.md$/, "", n); print n }' | sort -u
+    }
+
+    case "$SUB_CMD" in
+        list)
+            printf "\n${CYAN}%s${NC}\n" "======================================================="
+            printf "${CYAN}  orchclaude templates${NC}\n"
+            printf "${CYAN}%s${NC}\n" "======================================================="
+            names=$(list_templates)
+            if [[ -z "$names" ]]; then
+                printf "${YELLOW}  No templates found.${NC}\n"
+                printf "${DGRAY}  Built-in templates should be in: %s${NC}\n" "$BUILTIN_TPL_DIR"
+            else
+                printf "\n"
+                while IFS= read -r n; do
+                    [[ -z "$n" ]] && continue
+                    path=$(resolve_template_path "$n")
+                    src=$(resolve_template_source "$n")
+                    tag=""
+                    [[ "$src" == "custom" ]] && tag=" [custom]"
+                    # Pull the first non-empty line and strip "# orchclaude template:" prefix
+                    first=$(grep -m1 -v '^\s*$' "$path" 2>/dev/null | sed -E 's/^#+[[:space:]]*orchclaude template:[[:space:]]*//')
+                    printf "  ${WHITE}%-20s${NC} %s%s\n" "$n" "$first" "$tag"
+                done <<< "$names"
+            fi
+            printf "\n"
+            printf "${DGRAY}  Usage:${NC}\n"
+            printf "${DGRAY}    orchclaude template show <name>           -- view the prompt${NC}\n"
+            printf "${DGRAY}    orchclaude template run  <name> [flags]   -- run with this template${NC}\n"
+            printf "\n"
+            printf "${DGRAY}  Add custom templates: place .md files in %s${NC}\n\n" "$USER_TPL_DIR"
+            exit 0
+            ;;
+        show)
+            if [[ -z "$TPL_NAME" ]]; then
+                printf "${RED}Usage: orchclaude template show <name>${NC}\n" >&2
+                exit 1
+            fi
+            tpl_path=$(resolve_template_path "$TPL_NAME") || {
+                printf "${RED}Template '%s' not found. Run 'orchclaude template list' to see available templates.${NC}\n" "$TPL_NAME" >&2
+                exit 1
+            }
+            src=$(resolve_template_source "$TPL_NAME")
+            printf "\n${CYAN}%s${NC}\n" "======================================================="
+            printf "${CYAN}  Template: %s  (%s)${NC}\n" "$TPL_NAME" "$src"
+            printf "${CYAN}%s${NC}\n\n" "======================================================="
+            cat "$tpl_path"
+            printf "\n${DGRAY}%s${NC}\n" "======================================================="
+            printf "${DGRAY}  Run it: orchclaude template run %s -t 1h -d <project-dir>${NC}\n\n" "$TPL_NAME"
+            exit 0
+            ;;
+        run)
+            if [[ -z "$TPL_NAME" ]]; then
+                printf "${RED}Usage: orchclaude template run <name> [flags]${NC}\n" >&2
+                exit 1
+            fi
+            tpl_path=$(resolve_template_path "$TPL_NAME") || {
+                printf "${RED}Template '%s' not found. Run 'orchclaude template list' to see available templates.${NC}\n" "$TPL_NAME" >&2
+                exit 1
+            }
+            src=$(resolve_template_source "$TPL_NAME")
+            PROMPT_ARG=$(cat "$tpl_path")
+            SUBARG=""
+            COMMAND="run"
+            printf "\n"
+            printf "${CYAN}Template  : %s (%s)${NC}\n" "$TPL_NAME" "$src"
+            printf "${DGRAY}Prompt    : loaded from %s${NC}\n\n" "$tpl_path"
+            # fall through to run logic below
+            ;;
+        *)
+            printf "${RED}Unknown template subcommand '%s'. Use: list, show, run${NC}\n" "$SUB_CMD" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# ------------------------------------------------------------------ #
+# History command
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "history" ]]; then
+    HIST_DIR="$HOME/.orchclaude"
+    HIST_FILE="$HIST_DIR/history.json"
+    SUBCMD="${PROMPT_ARG:-}"
+
+    if [[ "${SUBCMD,,}" == "clear" ]]; then
+        if [[ ! -f "$HIST_FILE" ]]; then
+            printf "${YELLOW}No history to clear.${NC}\n"
+            exit 0
+        fi
+        read -r -p "Clear all orchclaude history? This cannot be undone. (y/n): " confirm
+        if [[ "${confirm,,}" == "y" ]]; then
+            rm -f "$HIST_FILE"
+            printf "${GREEN}History cleared.${NC}\n"
+        else
+            printf "${DGRAY}Cancelled.${NC}\n"
+        fi
+        exit 0
+    fi
+
+    if [[ ! -f "$HIST_FILE" ]]; then
+        printf "${YELLOW}No history yet. History is recorded after each run.${NC}\n"
+        exit 0
+    fi
+
+    python3 - <<PYEOF
+import json, os, sys
+from datetime import datetime, timezone
+
+hist_file = "$HIST_FILE"
+show_n    = $HISTORY_N
+
+try:
+    raw = json.load(open(hist_file))
+    history = raw if isinstance(raw, list) else ([raw] if raw else [])
+except:
+    print("\033[0;31mHistory file is corrupt or unreadable.\033[0m")
+    sys.exit(1)
+
+if not history:
+    print("\033[1;33mNo history yet. History is recorded after each run.\033[0m")
+    sys.exit(0)
+
+entries = history[:show_n]
+total   = len(history)
+
+NC      = "\033[0m"
+CYAN    = "\033[0;36m"
+DGRAY   = "\033[0;90m"
+GRAY    = "\033[0;37m"
+GREEN   = "\033[0;32m"
+YELLOW  = "\033[1;33m"
+RED     = "\033[0;31m"
+MAGENTA = "\033[0;35m"
+
+status_colors = {
+    "complete":           GREEN,
+    "timeout":            YELLOW,
+    "failed":             RED,
+    "usage_limit_paused": MAGENTA,
+}
+
+print()
+print(f"{CYAN}{'=' * 90}{NC}")
+print(f"{CYAN}  orchclaude run history  (showing {len(entries)} of {total} runs){NC}")
+print(f"{CYAN}{'=' * 90}{NC}")
+print()
+
+for idx, e in enumerate(entries, 1):
+    status = e.get("status", "unknown")
+    sc     = status_colors.get(status, "\033[1;37m")
+    try:
+        dt     = datetime.fromisoformat(e["date"].replace("Z", "+00:00"))
+        ds     = dt.strftime("%Y-%m-%d %H:%M")
+    except:
+        ds = e.get("date", "?")
+
+    work_dir = e.get("workDir", "?")
+    home     = os.path.expanduser("~")
+    if work_dir.startswith(home):
+        work_dir = "~" + work_dir[len(home):]
+    if len(work_dir) > 40:
+        work_dir = "..." + work_dir[-37:]
+
+    dur   = e.get("durationMinutes", 0)
+    cost  = e.get("estimatedCostUSD", 0)
+    iters = e.get("iterations", 0)
+    exc   = e.get("promptExcerpt", "").replace("\n", " ").replace("\r", "")
+    if len(exc) > 50:
+        exc = exc[:50] + "..."
+
+    label = f"{status.upper():<8}"
+    print(f"  {DGRAY}#{idx:<4} {ds}  {NC}{sc}{label}{NC}{GRAY}  {work_dir:<40}  {dur:>5.1f}m  \${cost:.2f}  {iters:>3} iters{NC}")
+    print(f'        {DGRAY}"{exc}"{NC}')
+
+print()
+if total > show_n:
+    print(f"  {DGRAY}Use 'orchclaude history -n {total}' to see all entries.{NC}")
+print(f"  {DGRAY}Use 'orchclaude history clear' to wipe history.{NC}")
+print()
+PYEOF
+    exit 0
+fi
+
+# ------------------------------------------------------------------ #
 # Resume command
 # ------------------------------------------------------------------ #
 RESUME_MODE=false
@@ -1103,7 +1412,7 @@ fi
 # Validate command
 # ------------------------------------------------------------------ #
 if [[ "$RESUME_MODE" != "true" && "$COMMAND" != "run" ]]; then
-    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, template, help, profile${NC}\n" "$COMMAND" >&2
+    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, template, history, help, profile${NC}\n" "$COMMAND" >&2
     exit 1
 fi
 
@@ -1518,6 +1827,7 @@ $(printf '%s\n' "${DEPENDENT_LINES[@]}")"
         show_cost_estimate
         show_worktree_branch_info
         send_webhook "timeout"
+        write_history "timeout"
         exit 1
     fi
 
@@ -1572,6 +1882,7 @@ $DEPENDENT_SECTION
         show_cost_estimate
         show_worktree_branch_info
         send_webhook "failed"
+        write_history "failed"
         exit 1
     fi
 
@@ -1588,6 +1899,7 @@ $DEPENDENT_SECTION
             show_cost_estimate
             show_worktree_branch_info
             send_webhook "timeout"
+            write_history "timeout"
             exit 1
         fi
         remaining_min=$(python3 -c "print(round(($TIMEOUT_SECONDS - $elapsed) / 60, 1))" 2>/dev/null || echo "?")
@@ -1650,6 +1962,7 @@ Your job now is to act as a QA engineer and adversarial tester.
     show_cost_estimate
     write_banner "ALL DONE  |  $TOTAL_TIME total" "$GREEN"
     send_webhook "complete"
+    write_history "complete"
 
     if [[ "$USE_WORKTREE" == "true" ]]; then
         printf "\n"
@@ -1696,6 +2009,7 @@ for (( iter=START_ITER; iter<=I; iter++ )); do
         write_session "timeout" "$iter"
         show_cost_estimate
         send_webhook "timeout"
+        write_history "timeout"
         break
     fi
 
@@ -1882,6 +2196,7 @@ Continue from where you left off. Output $TOKEN when everything is done."
                 show_cost_estimate
                 show_worktree_branch_info
                 send_webhook "failed"
+                write_history "failed"
                 exit 1
                 ;;
             ""|y)
@@ -1911,6 +2226,7 @@ if [[ "$COMPLETED" != "true" ]]; then
     write_banner "BUILD INCOMPLETE — did not finish. See log: $LOG_FILE" "$RED"
     show_cost_estimate
     send_webhook "failed"
+    write_history "failed"
     show_worktree_branch_info
     printf "${YELLOW}  Run 'orchclaude resume' to continue this session.${NC}\n"
     exit 1
@@ -1934,6 +2250,7 @@ else
         show_cost_estimate
         show_worktree_branch_info
         send_webhook "timeout"
+        write_history "timeout"
         exit 1
     fi
 
@@ -2002,6 +2319,7 @@ TOTAL_TIME=$(python3 -c "s=$TOTAL_ELAPSED; print(f'{s//60:02d}:{s%60:02d}')" 2>/
 show_cost_estimate
 write_banner "ALL DONE  |  $TOTAL_TIME total" "$GREEN"
 send_webhook "complete"
+write_history "complete"
 
 if [[ "$USE_WORKTREE" == "true" ]]; then
     printf "\n"

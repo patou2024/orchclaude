@@ -583,12 +583,175 @@ Named model strategies the user can apply with a single flag.
 
 ---
 
+## Phase 8 — Run History
+
+Goal: give users a persistent record of every orchclaude run so they can review what was built,
+how long it took, how much it cost, and whether it succeeded.
+
+---
+
+### 8.1 — Run History Log (`orchclaude history`)
+
+**What it is:**
+After every run (complete, timeout, or failed), append a summary entry to a persistent history
+file at `~/.orchclaude/history.json`. A new `orchclaude history` command displays the log in a
+clean, readable format.
+
+**Why it matters:**
+Right now every run disappears from memory the moment the terminal closes. Users have no way to
+review what was built last week, compare run durations, or audit cost across a project. A history
+log makes orchclaude a proper tool with an audit trail.
+
+**Implementation:**
+
+History file location: `~/.orchclaude/history.json`
+Each entry is a JSON object appended to an array:
+```json
+{
+  "id": "<timestamp-based unique ID>",
+  "date": "<ISO 8601 datetime>",
+  "workDir": "<absolute path>",
+  "promptExcerpt": "<first 120 chars of prompt>",
+  "status": "complete | timeout | failed | usage_limit_paused",
+  "iterations": 7,
+  "durationMinutes": 4.2,
+  "estimatedCostUSD": 0.03,
+  "progressCount": 5,
+  "lastProgress": "<last PROGRESS line or empty string>"
+}
+```
+
+Write the history entry:
+- Call a `Write-History` function at every exit point where a run ends (same places `Send-Webhook` is called).
+- The function reads the existing history array, appends the new entry, and writes it back.
+- Cap the history at 200 entries (drop oldest if over limit).
+- Errors in history writing must be non-fatal (catch and warn, never crash the run).
+
+`orchclaude history` command:
+- Reads `~/.orchclaude/history.json`.
+- Displays the last 20 entries by default, newest first.
+- Each entry shows: index, date, status (color-coded), workDir (truncated to 40 chars), duration, cost, iterations, prompt excerpt.
+- `-n <number>` flag shows more entries (e.g. `orchclaude history -n 50`).
+- `orchclaude history clear` subcommand wipes the history file after confirmation.
+- If history file does not exist: print "No history yet. History is recorded after each run."
+
+Display format (one line per run):
+```
+  #1  2026-04-20 14:32  COMPLETE    ~/projects/myapp          4.2m  $0.03  7 iters  "Create a REST API..."
+  #2  2026-04-20 11:15  TIMEOUT     ~/projects/myapp          30.0m $0.18  40 iters "Build a full..."
+  #3  2026-04-19 22:04  COMPLETE    C:\Users\pana5\orchclaude  1.1m  $0.01  3 iters  "Add a flag..."
+```
+
+**Acceptance Criteria:**
+- Every run completion writes a history entry (complete, timeout, failed, usage_limit_paused)
+- `orchclaude history` displays entries newest-first with status color coding
+- `orchclaude history -n 50` shows up to 50 entries
+- `orchclaude history clear` wipes the history after a "Are you sure? (y/n)" confirmation
+- If history file is missing or empty, a friendly message is shown (no error)
+- History write errors do not crash or interrupt the run
+- Documented in README and --help output
+
+---
+
+## Phase 9 — Advanced Metrics and Observability
+
+Goal: give users deep insights into run performance, cost breakdown by iteration, and historical trends.
+This phase transforms raw history data into actionable insights.
+
+---
+
+### 9.1 — Per-Iteration Performance Metrics
+
+**What it is:**
+Track detailed metrics for every iteration: elapsed time, input/output tokens, estimated cost,
+success/failure status. Save these metrics to a per-run file and aggregate them in history.
+
+**Why it matters:**
+Users need to understand where time and money are being spent. Which iterations are expensive?
+Which ones made progress? This data helps optimize future runs.
+
+**Implementation:**
+
+Metrics per iteration:
+- `iterationNumber`: numeric index (1, 2, 3...)
+- `modelUsed`: the model tier/ID used (haiku, sonnet, opus, or specific model ID)
+- `startTime`: ISO 8601 timestamp when iteration started
+- `elapsedSeconds`: wall-clock time from start to Claude response received
+- `inputTokens`: estimated input tokens sent to Claude
+- `outputTokens`: estimated output tokens received from Claude
+- `estimatedCostUSD`: cost for this iteration alone
+- `hadProgress`: boolean (true if PROGRESS lines were detected)
+- `progressLines`: array of PROGRESS strings detected in output
+- `status`: "success" | "retry" | "failed" | "escalated"
+
+Metrics file: `orchclaude-metrics.json` (per run, in work directory)
+Format: JSON array of iteration objects, newest-first on append.
+
+Capture metrics:
+- Start time: before Invoke-Claude call
+- Elapsed: difference between Claude response received and start time
+- Tokens: from existing cost estimator (word * 1.33)
+- Cost: use existing rate calculation
+- Progress: scan output for new PROGRESS lines
+- Model: from current iteration's model selection
+- Status: derive from whether run continues, escalates, fails, etc.
+
+Integration points:
+- Call `Write-Metrics` at each iteration completion (after all logs are written)
+- `Write-Metrics` appends the iteration record to `orchclaude-metrics.json`
+- Make it non-fatal: catch errors and warn but do not crash
+- Also append a metrics line to `orchclaude-log.txt` for readability:
+  `[METRICS] Iter 3: opus | 18s elapsed | 2400→512 tokens | $0.018 | 3 PROGRESS lines`
+
+History integration:
+- When writing a history entry (in Write-History), calculate:
+  - Average tokens per iteration (from metrics file)
+  - Average cost per iteration
+  - Average elapsed per iteration
+  - Iteration with highest cost
+  - Total success/failure breakdown by model
+- Add these summary fields to the history entry:
+  - `avgTokensPerIter`: rounded to nearest 100
+  - `avgCostPerIter`: rounded to nearest $0.001
+  - `avgElapsedPerIter`: seconds
+  - `fastestIter` / `slowestIter`: iteration numbers
+  - `mostExpensiveIter`: iteration number
+
+Dashboard/display:
+- `orchclaude metrics [-d <path>]` command: reads `orchclaude-metrics.json` and displays:
+  - Table format: iter | model | elapsed | tokens | cost | progress | status
+  - Summary at bottom: total time, total cost, avg per iter, success rate
+  - Example:
+    ```
+    Iteration Metrics for /path/to/work:
+    
+    Iter  Model    Elapsed  Input   Output  Cost    Progress  Status
+    ----  -------  -------  ------  ------  ------  --------  ---------
+    1     sonnet   12.5s    1200    680     $0.013  1 line    success
+    2     sonnet   8.2s     950     420     $0.009  2 lines   success
+    3     opus     22.1s    2100    1200    $0.045  1 line    escalated
+    4     opus     15.3s    1800    950     $0.038  2 lines   success
+    
+    Summary: 58.1s total, $0.105 total, 3 iters with progress, 1 escalation
+    ```
+
+**Acceptance Criteria:**
+- Every iteration writes metrics to `orchclaude-metrics.json`
+- Metrics file is valid JSON and human-readable
+- `orchclaude metrics` displays iteration table with color coding
+- History entries include aggregated metrics (avg tokens, avg cost, etc.)
+- Metrics errors never crash a run (caught and warned)
+- Metrics work on both Windows (PS1) and Unix (SH)
+- Documented in README and --help
+
+---
+
 ## Feature Backlog (unscheduled)
 
 These are ideas with no phase assigned yet. They get promoted to a phase when the time is right.
 
-- `orchclaude explain` — runs Claude in read-only mode and asks it to explain what it built
-- `orchclaude diff` — shows a clean diff of everything changed in the last run
-- Slack / Discord webhook notification when a run completes
-- Support for .orchclauderc config file in the project root
-- Template library: common project types (REST API, HTML tool, Python script) as starter prompts
+- `orchclaude analytics` — visualize trends over historical runs (cost over time, success rate, etc.)
+- `orchclaude compare <run1> <run2>` — compare metrics and outcomes between two runs
+- Custom exit handlers — let users run cleanup scripts after runs complete
+- Slack thread notifications — reply in Slack threads for better conversation threading
+- Model cost estimator hints — let users test prompts on cheaper models before committing to full run

@@ -77,6 +77,8 @@ If the terminal is closed or power is lost mid-run:
     orchclaude resume          [-d <path>]
     orchclaude status          [-d <path>]
     orchclaude explain         [-d <path>]
+    orchclaude history         [-n <count>]
+    orchclaude history clear
 
 ---
 
@@ -145,6 +147,18 @@ If the terminal is closed or power is lost mid-run:
       orchclaude explain                    (explain current directory)
       orchclaude explain -d C:\Projects\App (explain a specific directory)
 
+  RUN HISTORY
+    history         Show a table of past orchclaude runs, newest first.
+                    Each row: date, status, work dir, duration, estimated cost,
+                    iterations, and the first ~32 chars of the prompt.
+                    History is written to ~/.orchclaude/history.json at the end of
+                    every run (complete, timeout, failed, usage_limit_paused).
+                    Capped at 200 entries (oldest are dropped).
+
+      orchclaude history              (last 20 runs)
+      orchclaude history -n 50        (last 50 runs)
+      orchclaude history clear        (wipe history after y/n confirmation)
+
   COMING SOON (Phase 1.3+)
     -test <cmd>     Validation command to run after each completion claim.
 
@@ -186,6 +200,11 @@ If the terminal is closed or power is lost mid-run:
   Explain what was built after a run:
     orchclaude explain
     orchclaude explain -d "C:\Projects\MyApp"
+
+  Review past runs:
+    orchclaude history
+    orchclaude history -n 50
+    orchclaude history clear
 
   Require tests to pass before finishing (coming in Phase 1.1):
     orchclaude run "Add the login feature" -t 1h -test "npm test"
