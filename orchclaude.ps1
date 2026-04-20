@@ -1,4 +1,4 @@
-# orchclaude - Claude Code Orchestrator CLI
+﻿# orchclaude - Claude Code Orchestrator CLI
 # Usage: orchclaude run "prompt" -t30m
 #        orchclaude run -f project.md -t2h
 #        orchclaude run "prompt" -t1h -i 60 -v -d "C:\Projects\MyApp"
@@ -35,10 +35,23 @@ param(
     [string]$modelprofile = "", # -modelprofile <preset>: fast | balanced | quality | auto
     [switch]$autowait,          # -autowait       : sleep in-process after usage limit and auto-resume (terminal must stay open)
     [switch]$autoschedule,      # -autoschedule   : create schtasks entry and exit after usage limit (terminal can close)
-    [int]$waittime = 300,       # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
-    [string]$webhook = "",      # -webhook <url>  : POST a JSON summary to this URL when the run finishes (Slack/Discord/generic)
-    [int]$n = 20                # -n <count>      : number of history entries to show (used by orchclaude history)
+    [int]$waittime = 300        # -waittime <min> : minutes to wait after usage limit (default 300 = 5 hours)
 )
+
+# ---- 7.4: Model Profile Presets ----
+$noEscalation = $false
+if ($modelprofile -ne "") {
+    switch ($modelprofile.ToLower()) {
+        "fast"     { if (-not $model) { $model = "light"  } }
+        "quality"  { if (-not $model) { $model = "heavy"  } }
+        "balanced" { $noEscalation = $true }
+        "auto"     { }   # classifier + escalation (default)
+        default    {
+            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
+            exit 1
+        }
+    }
+}
 
 # ---- Help ----
 if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
@@ -52,8 +65,8 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, template, history, help, profile"
-        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, help, profile"
+        Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
         Write-Host "            orchclaude profile delete <name>"
@@ -102,7 +115,6 @@ if ($Command -eq "profile") {
             noplan   = [bool]$noplan
             nobranch = [bool]$nobranch
             agents   = $agents
-            webhook  = $webhook
         }
         Save-Profiles $profiles
         Write-Host "Profile '$SubArg' saved to $profilesFile" -ForegroundColor Green
@@ -544,187 +556,6 @@ if ($Command -eq "diff") {
     exit 0
 }
 
-# ---- Template command ----
-if ($Command -eq "template") {
-    $subCmd          = $Prompt.ToLower()
-    $builtinTplDir   = Join-Path $PSScriptRoot "templates"
-    $userTplDir      = Join-Path $env:USERPROFILE ".orchclaude\templates"
-
-    # Collect all templates: built-in first, then user (user can override built-in by name)
-    function Get-TemplateMap {
-        $map = [ordered]@{}
-        foreach ($dir in @($builtinTplDir, $userTplDir)) {
-            if (Test-Path $dir) {
-                Get-ChildItem -Path $dir -Filter "*.md" | Sort-Object Name | ForEach-Object {
-                    $map[$_.BaseName] = @{ Path = $_.FullName; Source = if ($dir -eq $builtinTplDir) { "built-in" } else { "custom" } }
-                }
-            }
-        }
-        return $map
-    }
-
-    if ($subCmd -eq "list") {
-        $map = Get-TemplateMap
-        Write-Host ""
-        Write-Host ("=" * 55) -ForegroundColor Cyan
-        Write-Host "  orchclaude templates" -ForegroundColor Cyan
-        Write-Host ("=" * 55) -ForegroundColor Cyan
-        if ($map.Count -eq 0) {
-            Write-Host "  No templates found." -ForegroundColor Yellow
-            Write-Host "  Built-in templates should be in: $builtinTplDir" -ForegroundColor DarkGray
-        } else {
-            Write-Host ""
-            foreach ($name in $map.Keys) {
-                $entry  = $map[$name]
-                $tag    = if ($entry.Source -eq "custom") { " [custom]" } else { "" }
-                $first  = (Get-Content $entry.Path | Where-Object { $_ -match '\S' } | Select-Object -First 1) -replace '^#+\s*orchclaude template:\s*', ''
-                Write-Host ("  {0,-20} {1}{2}" -f $name, $first, $tag) -ForegroundColor White
-            }
-        }
-        Write-Host ""
-        Write-Host "  Usage:" -ForegroundColor DarkGray
-        Write-Host "    orchclaude template show <name>           -- view the prompt" -ForegroundColor DarkGray
-        Write-Host "    orchclaude template run  <name> [flags]   -- run with this template" -ForegroundColor DarkGray
-        Write-Host ""
-        Write-Host "  Add custom templates: place .md files in $userTplDir" -ForegroundColor DarkGray
-        Write-Host ""
-        exit 0
-    }
-
-    elseif ($subCmd -eq "show") {
-        if (-not $SubArg) {
-            Write-Error "Usage: orchclaude template show <name>"
-            exit 1
-        }
-        $map = Get-TemplateMap
-        if (-not $map.ContainsKey($SubArg)) {
-            Write-Error "Template '$SubArg' not found. Run 'orchclaude template list' to see available templates."
-            exit 1
-        }
-        $tplPath = $map[$SubArg].Path
-        Write-Host ""
-        Write-Host ("=" * 55) -ForegroundColor Cyan
-        Write-Host "  Template: $SubArg  ($($map[$SubArg].Source))" -ForegroundColor Cyan
-        Write-Host ("=" * 55) -ForegroundColor Cyan
-        Write-Host ""
-        Get-Content $tplPath | ForEach-Object { Write-Host $_ }
-        Write-Host ""
-        Write-Host ("=" * 55) -ForegroundColor DarkGray
-        Write-Host "  Run it: orchclaude template run $SubArg -t 1h -d <project-dir>" -ForegroundColor DarkGray
-        Write-Host ""
-        exit 0
-    }
-
-    elseif ($subCmd -eq "run") {
-        if (-not $SubArg) {
-            Write-Error "Usage: orchclaude template run <name> [flags]"
-            exit 1
-        }
-        $map = Get-TemplateMap
-        if (-not $map.ContainsKey($SubArg)) {
-            Write-Error "Template '$SubArg' not found. Run 'orchclaude template list' to see available templates."
-            exit 1
-        }
-        $tplPath = $map[$SubArg].Path
-        $Prompt  = Get-Content $tplPath -Raw
-        $Command = "run"
-        Write-Host ""
-        Write-Host "Template  : $SubArg ($($map[$SubArg].Source))" -ForegroundColor Cyan
-        Write-Host "Prompt    : loaded from $tplPath" -ForegroundColor DarkGray
-        Write-Host ""
-        # fall through to run logic below
-    }
-
-    else {
-        Write-Error "Unknown template subcommand '$subCmd'. Use: list, show, run"
-        exit 1
-    }
-}
-
-# ---- History command ----
-if ($Command -eq "history") {
-    $histDir  = Join-Path $env:USERPROFILE ".orchclaude"
-    $histFile = Join-Path $histDir "history.json"
-
-    # history clear
-    if ($Prompt -ieq "clear") {
-        if (-not (Test-Path $histFile)) {
-            Write-Host "No history to clear." -ForegroundColor Yellow
-            exit 0
-        }
-        $confirm = Read-Host "Clear all orchclaude history? This cannot be undone. (y/n)"
-        if ($confirm -ieq "y") {
-            Remove-Item $histFile -Force
-            Write-Host "History cleared." -ForegroundColor Green
-        } else {
-            Write-Host "Cancelled." -ForegroundColor DarkGray
-        }
-        exit 0
-    }
-
-    if (-not (Test-Path $histFile)) {
-        Write-Host "No history yet. History is recorded after each run." -ForegroundColor Yellow
-        exit 0
-    }
-
-    try {
-        $raw     = Get-Content $histFile -Raw | ConvertFrom-Json
-        $history = if ($raw -is [array]) { @($raw) } elseif ($raw) { @($raw) } else { @() }
-    } catch {
-        Write-Host "History file is corrupt or unreadable: $_" -ForegroundColor Red
-        exit 1
-    }
-
-    if ($history.Count -eq 0) {
-        Write-Host "No history yet. History is recorded after each run." -ForegroundColor Yellow
-        exit 0
-    }
-
-    $showCount = if ($n -ne 20) { $n } else { 20 }
-    $entries   = $history | Select-Object -First $showCount
-
-    Write-Host ""
-    Write-Host ("=" * 90) -ForegroundColor Cyan
-    Write-Host ("  orchclaude run history  (showing $($entries.Count) of $($history.Count) runs)") -ForegroundColor Cyan
-    Write-Host ("=" * 90) -ForegroundColor Cyan
-    Write-Host ""
-
-    $idx = 1
-    foreach ($e in $entries) {
-        $statusColor = switch ($e.status) {
-            "complete"            { "Green"  }
-            "timeout"             { "Yellow" }
-            "failed"              { "Red"    }
-            "usage_limit_paused"  { "Magenta"}
-            default               { "White"  }
-        }
-        $statusLabel = "{0,-8}" -f $e.status.ToUpper()
-        $dateStr     = try { ([datetime]$e.date).ToString("yyyy-MM-dd HH:mm") } catch { $e.date }
-        $dirShort    = $e.workDir -replace [regex]::Escape($env:USERPROFILE), "~"
-        if ($dirShort.Length -gt 40) { $dirShort = "..." + $dirShort.Substring($dirShort.Length - 37) }
-        $dirPadded   = "{0,-40}" -f $dirShort
-        $cost        = "`${0:N2}" -f [double]$e.estimatedCostUSD
-        $excerpt     = if ($e.promptExcerpt.Length -gt 50) { $e.promptExcerpt.Substring(0, 50) + "..." } else { $e.promptExcerpt }
-        $excerpt     = $excerpt -replace "`r|`n", " "
-
-        $line1 = "  #{0,-4} {1}  " -f $idx, $dateStr
-        Write-Host $line1 -NoNewline -ForegroundColor DarkGray
-        Write-Host $statusLabel -NoNewline -ForegroundColor $statusColor
-        Write-Host ("  {0}  {1,5}m  {2,6}  {3,3} iters" -f $dirPadded, $e.durationMinutes, $cost, $e.iterations) -NoNewline -ForegroundColor Gray
-        Write-Host ""
-        Write-Host ("        `"$excerpt`"") -ForegroundColor DarkGray
-        $idx++
-    }
-
-    Write-Host ""
-    if ($history.Count -gt $showCount) {
-        Write-Host "  Use 'orchclaude history -n $($history.Count)' to see all entries." -ForegroundColor DarkGray
-    }
-    Write-Host "  Use 'orchclaude history clear' to wipe history." -ForegroundColor DarkGray
-    Write-Host ""
-    exit 0
-}
-
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -785,37 +616,7 @@ if ($Command -eq "resume") {
     $resumeMode = $true
 }
 
-# ---- Load .orchclauderc from project root (profile overrides RC; CLI overrides both) ----
-$rcDir    = if ($d) { $d } else { (Get-Location).Path }
-$rcFile   = Join-Path $rcDir ".orchclauderc"
-$rcLoaded = $false
-if ((Test-Path $rcFile) -and -not $resumeMode) {
-    try {
-        $rc = Get-Content $rcFile -Raw | ConvertFrom-Json
-        if (-not $PSBoundParameters.ContainsKey('t'))            { if ($null -ne $rc.t)            { $t            = "$($rc.t)"                                                             } }
-        if (-not $PSBoundParameters.ContainsKey('i'))            { if ($null -ne $rc.i)            { $i            = [int]$rc.i                                                              } }
-        if (-not $PSBoundParameters.ContainsKey('v'))            { if ($null -ne $rc.v)            { $v            = [System.Management.Automation.SwitchParameter][bool]$rc.v              } }
-        if (-not $PSBoundParameters.ContainsKey('noqa'))         { if ($null -ne $rc.noqa)         { $noqa         = [System.Management.Automation.SwitchParameter][bool]$rc.noqa           } }
-        if (-not $PSBoundParameters.ContainsKey('token'))        { if ($null -ne $rc.token)        { $token        = "$($rc.token)"                                                         } }
-        if (-not $PSBoundParameters.ContainsKey('cooldown'))     { if ($null -ne $rc.cooldown)     { $cooldown     = [int]$rc.cooldown                                                      } }
-        if (-not $PSBoundParameters.ContainsKey('breaker'))      { if ($null -ne $rc.breaker)      { $breaker      = [int]$rc.breaker                                                       } }
-        if (-not $PSBoundParameters.ContainsKey('noplan'))       { if ($null -ne $rc.noplan)       { $noplan       = [System.Management.Automation.SwitchParameter][bool]$rc.noplan         } }
-        if (-not $PSBoundParameters.ContainsKey('nobranch'))     { if ($null -ne $rc.nobranch)     { $nobranch     = [System.Management.Automation.SwitchParameter][bool]$rc.nobranch       } }
-        if (-not $PSBoundParameters.ContainsKey('agents'))       { if ($null -ne $rc.agents)       { $agents       = [int]$rc.agents                                                        } }
-        if (-not $PSBoundParameters.ContainsKey('webhook'))      { if ($null -ne $rc.webhook)      { $webhook      = "$($rc.webhook)"                                                       } }
-        if (-not $PSBoundParameters.ContainsKey('model'))        { if ($null -ne $rc.model)        { $model        = "$($rc.model)"                                                         } }
-        if (-not $PSBoundParameters.ContainsKey('budget'))       { if ($null -ne $rc.budget)       { $budget       = [double]$rc.budget                                                     } }
-        if (-not $PSBoundParameters.ContainsKey('modelprofile')) { if ($null -ne $rc.modelprofile) { $modelprofile = "$($rc.modelprofile)"                                                  } }
-        if (-not $PSBoundParameters.ContainsKey('autowait'))     { if ($null -ne $rc.autowait)     { $autowait     = [System.Management.Automation.SwitchParameter][bool]$rc.autowait       } }
-        if (-not $PSBoundParameters.ContainsKey('autoschedule')) { if ($null -ne $rc.autoschedule) { $autoschedule = [System.Management.Automation.SwitchParameter][bool]$rc.autoschedule   } }
-        if (-not $PSBoundParameters.ContainsKey('waittime'))     { if ($null -ne $rc.waittime)     { $waittime     = [int]$rc.waittime                                                      } }
-        $rcLoaded = $true
-    } catch {
-        Write-Warning ".orchclauderc parse error: $_"
-    }
-}
-
-# ---- Load named profile (CLI flags take precedence; profile overrides .orchclauderc) ----
+# ---- Load named profile (CLI flags take precedence) ----
 if ($profile -and -not $resumeMode) {
     $profiles = Get-Profiles
     if (-not $profiles.ContainsKey($profile)) {
@@ -834,22 +635,6 @@ if ($profile -and -not $resumeMode) {
     if (-not $PSBoundParameters.ContainsKey('noplan'))   { $noplan   = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
     if (-not $PSBoundParameters.ContainsKey('nobranch')) { $nobranch = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
     if (-not $PSBoundParameters.ContainsKey('agents'))   { $agents   = if ($p.agents) { [int]$p.agents } else { 1 } }
-    if (-not $PSBoundParameters.ContainsKey('webhook'))  { $webhook  = if ($p.webhook) { "$($p.webhook)" } else { "" } }
-}
-
-# ---- 7.4: Model Profile Presets (evaluated after RC + profile so all sources are resolved) ----
-$noEscalation = $false
-if ($modelprofile -ne "") {
-    switch ($modelprofile.ToLower()) {
-        "fast"     { if (-not $model) { $model = "light"  } }
-        "quality"  { if (-not $model) { $model = "heavy"  } }
-        "balanced" { $noEscalation = $true }
-        "auto"     { }
-        default    {
-            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
-            exit 1
-        }
-    }
 }
 
 # ---- Validate agents flag ----
@@ -872,7 +657,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude template, orchclaude history, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -987,7 +772,6 @@ $timeoutDisplay = $t
 
 $totalInputWords  = 0
 $totalOutputWords = 0
-$script:webhookSent = $false
 
 # ---- Session file helpers ----
 function Write-Session($status, $currentIteration) {
@@ -1083,120 +867,6 @@ function Show-CostEstimate {
     Write-Log $line "Cyan"
 }
 
-function Send-Webhook($status) {
-    if (-not $webhook) { return }
-    if ($script:webhookSent) { return }   # only fire once per run
-    $script:webhookSent = $true
-
-    try {
-        $elapsedSec  = [int]((Get-Date) - $startTime).TotalSeconds
-        $elapsedMin  = [math]::Round($elapsedSec / 60, 1)
-        $cost        = Get-EstimatedCost
-        $lastProg    = "(none)"
-        $progCount   = 0
-        if (Test-Path $progressFile) {
-            $progLines = @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
-            $progCount = $progLines.Count
-            if ($progCount -gt 0) { $lastProg = $progLines[-1] }
-        }
-
-        $statusEmoji = switch ($status) {
-            "complete" { ":white_check_mark:" }
-            "timeout"  { ":hourglass:" }
-            "failed"   { ":x:" }
-            default    { ":information_source:" }
-        }
-
-        $msg = "$statusEmoji orchclaude run $status`n" +
-               "Work dir: $workDir`n" +
-               "Elapsed: ${elapsedMin}m`n" +
-               "Progress lines: $progCount`n" +
-               "Estimated cost: `$$cost`n" +
-               "Last progress: $lastProg"
-
-        if ($webhook -match "hooks\.slack\.com") {
-            $payload = @{ text = $msg } | ConvertTo-Json -Compress
-        } elseif ($webhook -match "discord(app)?\.com/api/webhooks") {
-            $payload = @{ content = $msg } | ConvertTo-Json -Compress
-        } else {
-            $payload = [ordered]@{
-                event          = "orchclaude_run"
-                status         = $status
-                workDir        = $workDir
-                elapsedSeconds = $elapsedSec
-                progressCount  = $progCount
-                estimatedCost  = $cost
-                lastProgress   = $lastProg
-                message        = $msg
-            } | ConvertTo-Json -Compress
-        }
-
-        Invoke-RestMethod -Uri $webhook -Method Post -ContentType "application/json; charset=utf-8" -Body $payload -TimeoutSec 10 | Out-Null
-        Write-Log "Webhook sent ($status)." "DarkCyan"
-    } catch {
-        Write-Log "Webhook send failed: $_" "DarkYellow"
-    }
-}
-
-function Write-History($status) {
-    try {
-        $histDir  = Join-Path $env:USERPROFILE ".orchclaude"
-        $histFile = Join-Path $histDir "history.json"
-
-        if (-not (Test-Path $histDir)) { New-Item -ItemType Directory -Path $histDir | Out-Null }
-
-        $elapsedMin = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
-        $cost       = Get-EstimatedCost
-        $lastProg   = ""
-        $progCount  = 0
-        if (Test-Path $progressFile) {
-            $progLines = @(Get-Content $progressFile | Where-Object { $_ -match "\S" })
-            $progCount = $progLines.Count
-            if ($progCount -gt 0) { $lastProg = $progLines[-1] }
-        }
-
-        $iterCount = 0
-        if (Test-Path $sessionFile) {
-            try {
-                $sess      = Get-Content $sessionFile -Raw | ConvertFrom-Json
-                $iterCount = [int]$sess.currentIteration
-            } catch {}
-        }
-
-        $promptExcerpt = if ($basePrompt.Length -gt 120) { $basePrompt.Substring(0, 120) + "..." } else { $basePrompt }
-        $id            = (Get-Date).ToString("yyyyMMdd-HHmmss") + "-" + ([System.Guid]::NewGuid().ToString("N").Substring(0, 6))
-
-        $entry = [ordered]@{
-            id               = $id
-            date             = (Get-Date).ToString("o")
-            workDir          = $workDir
-            promptExcerpt    = $promptExcerpt
-            status           = $status
-            iterations       = $iterCount
-            durationMinutes  = $elapsedMin
-            estimatedCostUSD = [double]$cost
-            progressCount    = $progCount
-            lastProgress     = $lastProg
-        }
-
-        $history = @()
-        if (Test-Path $histFile) {
-            try {
-                $raw = Get-Content $histFile -Raw | ConvertFrom-Json
-                if ($raw -is [array]) { $history = @($raw) }
-                elseif ($raw) { $history = @($raw) }
-            } catch {}
-        }
-
-        $history = @($entry) + $history
-        if ($history.Count -gt 200) { $history = $history[0..199] }
-
-        $history | ConvertTo-Json -Depth 5 | Set-Content $histFile -Encoding UTF8
-    } catch {
-        Write-Log "History write failed (non-fatal): $_" "DarkYellow"
-    }
-}
-
 function Check-Budget($currentIter = 0) {
     if ($script:budget -le 0) { return }
     $currentCost = Get-EstimatedCost
@@ -1209,8 +879,6 @@ function Check-Budget($currentIter = 0) {
             Show-CostEstimate
             Write-Session "timeout" $currentIter
             Show-WorktreeBranchInfo
-            Send-Webhook "failed"
-            Write-History "failed"
             exit 1
         } else {
             $script:budget = [math]::Round($script:budget * 2, 4)
@@ -1422,8 +1090,6 @@ Write-Log "Model     : $modelBannerVal" "Cyan"
 Write-Log "Budget    : $(if ($budget -gt 0) { "`$$budget limit ÔÇö pause and confirm if cost exceeds threshold" } else { 'disabled (use -budget <amount> to set a limit)' })" "Cyan"
 $usageLimitMode = if ($autowait) { "autowait (sleep in-process, $waittime min wait)" } elseif ($autoschedule) { "autoschedule (schtasks entry, $waittime min wait)" } else { "manual resume (orchclaude resume)" }
 Write-Log "UsageLimit: $usageLimitMode" "Cyan"
-Write-Log "Webhook   : $(if ($webhook) { "$webhook (Slack/Discord/generic JSON on run end)" } else { 'disabled (use -webhook <url> to notify on completion)' })" "Cyan"
-if ($rcLoaded) { Write-Log "RC file   : $rcFile" "Cyan" }
 if ($profile)  { Write-Log "Profile   : $profile (loaded from $profilesFile)" "Cyan" }
 Write-Log "Log       : $logFile" "Cyan"
 if ($resumeMode) {
@@ -1634,8 +1300,6 @@ Remember: work ONLY on your assigned subtasks above.
             Write-Session "timeout" $i
             Show-CostEstimate
             Show-WorktreeBranchInfo
-            Send-Webhook "timeout"
-            Write-History "timeout"
             exit 1
         }
 
@@ -1692,8 +1356,6 @@ $dependentSection
             Write-Session "timeout" $i
             Show-CostEstimate
             Show-WorktreeBranchInfo
-            Send-Webhook "failed"
-            Write-History "failed"
             exit 1
         }
 
@@ -1709,8 +1371,6 @@ $dependentSection
                 Write-Banner "TIMEOUT before QA phase could run" "Red"
                 Show-CostEstimate
                 Show-WorktreeBranchInfo
-                Send-Webhook "timeout"
-                Write-History "timeout"
                 exit 1
             }
             $remaining = [math]::Round(($timeoutSeconds - $elapsed) / 60, 1)
@@ -1771,8 +1431,6 @@ Your job now is to act as a QA engineer and adversarial tester.
         $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
         Show-CostEstimate
         Write-Banner "ALL DONE  |  $totalTime total" "Green"
-        Send-Webhook "complete"
-        Write-History "complete"
 
         if ($useWorktree) {
             Write-Host ""
@@ -1819,8 +1477,6 @@ for ($iter = $startIter; $iter -le $i; $iter++) {
         Write-Banner "TIMEOUT in build phase after $([math]::Round($elapsed/60,1)) min" "Red"
         Write-Session "timeout" $iter
         Show-CostEstimate
-        Send-Webhook "timeout"
-        Write-History "timeout"
         break
     }
 
@@ -2011,8 +1667,6 @@ Continue from where you left off. Output $token when everything is done.
             Write-Session "timeout" $iter
             Show-CostEstimate
             Show-WorktreeBranchInfo
-            Send-Webhook "failed"
-            Write-History "failed"
             exit 1
         } elseif ($userChoice -eq "" -or $userChoice -eq "y") {
             Write-Log "User chose to continue. Resetting failure streak." "Cyan"
@@ -2035,8 +1689,6 @@ if (-not $completed) {
     Write-Session "timeout" $i
     Write-Banner "BUILD INCOMPLETE - did not finish. See log: $logFile" "Red"
     Show-CostEstimate
-    Send-Webhook "failed"
-    Write-History "failed"
     Show-WorktreeBranchInfo
     Write-Host "  Run 'orchclaude resume' to continue this session." -ForegroundColor Yellow
     exit 1
@@ -2058,8 +1710,6 @@ if ($noqa) {
         Write-Session "timeout" $i
         Write-Banner "TIMEOUT before QA phase could run" "Red"
         Show-CostEstimate
-        Send-Webhook "timeout"
-        Write-History "timeout"
         Show-WorktreeBranchInfo
         exit 1
     }
@@ -2131,8 +1781,6 @@ Your job now is to act as a QA engineer and adversarial tester.
 Write-Session "complete" $i
 $totalTime = ((Get-Date) - $startTime).ToString("mm\:ss")
 Show-CostEstimate
-Send-Webhook "complete"
-Write-History "complete"
 Write-Banner "ALL DONE  |  $totalTime total" "Green"
 
 if ($useWorktree) {
