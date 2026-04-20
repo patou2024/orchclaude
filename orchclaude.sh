@@ -163,7 +163,7 @@ get_task_tier() {
 LIGHT=reading/planning/summarizing/simple files. STANDARD=general coding. HEAVY=architecture/complex debugging/security.
 Task: $excerpt"
     local raw
-    raw=$(claude -p "$classify_prompt" --model "$MODEL_LIGHT" --max-turns 1 2>&1) || true
+    raw=$(claude -p "$classify_prompt" --model "$MODEL_LIGHT" --max-turns 1 --dangerously-skip-permissions --output-format text 2>&1) || true
     if echo "$raw" | grep -qw "HEAVY"; then printf "heavy"; return; fi
     if echo "$raw" | grep -qw "LIGHT";  then printf "light";  return; fi
     printf "standard"

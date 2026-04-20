@@ -1344,7 +1344,7 @@ Task:
 $excerpt
 "@
     try {
-        $raw = (& claude -p $classifyPrompt --model claude-haiku-4-5-20251001 --max-turns 1 2>&1) -join " "
+        $raw = (& claude -p $classifyPrompt --model claude-haiku-4-5-20251001 --max-turns 1 --dangerously-skip-permissions --output-format text 2>&1) -join " "
         if ($raw -match "\bHEAVY\b")    { return "heavy" }
         if ($raw -match "\bLIGHT\b")    { return "light" }
     } catch {}

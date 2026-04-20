@@ -9,7 +9,7 @@ It is the first thing any new session should read before touching any code.
 
 **Version:** 0.1.0
 **Phase:** 9 — Reliability & Bug Fixes
-**Next item to implement:** 9.1 — Fix classifier missing --dangerously-skip-permissions
+**Next item to implement:** 9.2 — Fix Write-Session missing flags on resume
 **Last session date:** 2026-04-21
 **Windows stable:** yes
 **Cross-platform:** no
@@ -109,7 +109,7 @@ It is the first thing any new session should read before touching any code.
 
 ## Phase 9 Checklist — Reliability & Bug Fixes
 
-- [ ] 9.1 — Fix classifier missing --dangerously-skip-permissions
+- [x] 9.1 — Fix classifier missing --dangerously-skip-permissions
 - [ ] 9.2 — Fix Write-Session missing flags on resume
 - [ ] 9.3 — Fix modelprofile evaluated before profile loading
 
@@ -118,6 +118,18 @@ It is the first thing any new session should read before touching any code.
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (9.1 classifier permissions fix)
+
+- Implemented 9.1: Fixed `Get-TaskTier` / `get_task_tier` classifier calls that were missing `--dangerously-skip-permissions`.
+- Without the flag, a fresh Claude Code session would prompt for tool permissions, nobody would answer, the classifier would return empty output, and orchclaude would silently fall back to the default "standard" tier on every iteration — breaking smart model routing.
+- Changes applied to both `orchclaude.ps1` (line 1347) and `orchclaude.sh` (line 166): added `--dangerously-skip-permissions --output-format text` to the haiku classifier call.
+- `--output-format text` is the default but we pass it explicitly to guard against any JSON-wrapper noise that could interfere with the `\bHEAVY\b` / `\bLIGHT\b` regex match.
+- Verified `claude --help` lists `--output-format text` as a supported value, so the flag is safe on current Claude Code versions.
+- Manually tested on Windows: a LIGHT-tier sample prompt now returns clean `LIGHT` output (PS1 raw stdout: `[...LIGHT]`, function returns `light`). No permission prompt appears.
+- No other feature changes — this is a targeted 1-line fix per script. Help text, README, and CLI surface are unchanged.
 
 ---
 
