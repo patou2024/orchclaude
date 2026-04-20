@@ -7,7 +7,11 @@ Run it with:
 
 For autonomous overnight runs (auto-resumes after usage limit, no human needed):
 
-    orchclaude run -f C:\Users\pana5\orchclaude\BUILDSELF.md -t 2h -d C:\Users\pana5\orchclaude -autowait -waittime 300
+    orchclaude run -f C:\Users\pana5\orchclaude\BUILDSELF.md -t 2h -d C:\Users\pana5\orchclaude -autowait -waittime 300 -nobranch -noplan
+
+NOTE: Always use -nobranch and -noplan for self-builds.
+-nobranch: writes directly to the repo (worktree creates a temp copy that loses changes).
+-noplan: BUILDSELF.md already has the steps, the planning phase is wasted work.
 
 ---
 
