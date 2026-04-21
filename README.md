@@ -1,303 +1,249 @@
-# orchclaude - Guide
+# orchclaude
 
-Keeps Claude running on a project until it finishes - not until Claude decides it's done.
-After the build, automatically runs a QA pass that checks edge cases and fixes issues.
+Keeps Claude Code running on a project until it actually finishes — not until Claude decides it's done.
 
----
-#EVERYTHING IS STILL WIP(Claude is running auto updates whenever my usage limit isnt hit(atleast thats the current goal to implement rn), also not tested on linux/mac os yet(so everything in this readme shall be taken with a grain of salt(or a spoon)))
-
-## Install via npm (recommended)
-
-Requires Node.js 14+. Detects your OS and wires up the right script automatically.
-
-    npm install -g orchclaude
-
-Then use it immediately:
-
-    orchclaude run "your prompt here" -t 30m
-
-To upgrade later:
-
-    npm install -g orchclaude@latest
+> **Status: actively self-building.** orchclaude is being developed by running itself against its own codebase. **Only tested on Windows.** A Linux/macOS shell script exists but has never been run in the field — treat it as experimental. See [Known Issues](#known-issues) before using in production.
 
 ---
 
-## One-Time Setup (manual / without npm)
+## What it does
 
-### Windows (PowerShell)
+You give it a prompt and a time limit. It calls Claude Code in a loop until Claude outputs `ORCHESTRATION_COMPLETE` or time runs out. After the build it runs a second adversarial QA pass that finds edge cases and fixes them directly in the files.
 
-1. Add orchclaude to your PATH (run once in PowerShell):
-
-    [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";C:\Users\pana5\bin", "User")
-
-   Then close and reopen your terminal.
-
-2. Allow PowerShell scripts (run once if not already done):
-
-    Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-
-### Linux / macOS
-
-1. Make the script executable and put it on your PATH:
-
-    chmod +x orchclaude.sh
-    sudo cp orchclaude.sh /usr/local/bin/orchclaude
-
-   Or without sudo (user-local):
-
-    mkdir -p "$HOME/.local/bin"
-    cp orchclaude.sh "$HOME/.local/bin/orchclaude"
-    chmod +x "$HOME/.local/bin/orchclaude"
-    # Add to your shell profile if not already there:
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc    # zsh
-
-2. Requirements: bash 3.2+, python3 (for JSON), git (optional, for worktree isolation).
-   All three are pre-installed on modern macOS and most Linux distributions.
+Every run is resumable. Kill the terminal, come back, run `orchclaude resume` and it picks up exactly where it left off — progress, prompt, and all flags intact.
 
 ---
 
-## Basic Usage
+## Install
 
-    orchclaude run "your prompt here" -t 30m
+Requires Node.js 14+ and Claude Code (`claude` CLI) in your PATH.
 
-Claude runs, loops, and stops when it's finished - or when time runs out.
+```
+npm install -g orchclaude
+```
 
-If the terminal is closed or power is lost mid-run:
+Or clone and use directly:
 
-    orchclaude resume          (continue where it left off)
-    orchclaude status          (show current session state)
+**Windows** — add `bin/` to your PATH, then:
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
 
----
-
-## Syntax
-
-    orchclaude run "<prompt>"  -t <timeout>  [options]
-    orchclaude run -f <file>   -t <timeout>  [options]
-    orchclaude resume          [-d <path>]
-    orchclaude status          [-d <path>]
-    orchclaude explain         [-d <path>]
-    orchclaude history         [-n <count>]
-    orchclaude history clear
+**Linux / macOS:**
+```bash
+chmod +x orchclaude.sh
+cp orchclaude.sh ~/.local/bin/orchclaude
+```
 
 ---
 
-## Flags
+## Quick start
 
-  REQUIRED
-    "prompt"        Describe what to build. Be as detailed as you want.
-    -t <time>       Timeout. Number + m or h. Examples: -t 5m  -t 2h  -t 90m
+```
+orchclaude run "Build a Python script that renames files by date" -t 20m
+orchclaude run -f my-project.md -t 2h
+orchclaude resume                          # continue after a crash or Ctrl+C
+```
 
-  OPTIONAL
-    -f <file>       Load prompt from a .md or .txt file instead of typing inline
-    -i <number>     Max iterations (loops) before giving up. Default: 40
-    -d <path>       Working directory - where Claude reads and writes files. Default: current folder
-    -v              Verbose - print Claude's full output every iteration
-    -noqa           Skip the automatic QA + edge case evaluation pass
-    -token <word>   Custom word Claude must say to finish. Default: ORCHESTRATION_COMPLETE
-    -cooldown <s>   Seconds to wait between iterations. Default: 5. Use 0 to disable.
-    -breaker <n>    Pause and ask if Claude stalls for N iterations with no new progress.
-                    Default: 10. Use 0 to disable.
-    -dryrun         Print the full prompt that would be sent to Claude and exit.
-                    No Claude call is made. No files are created or modified.
-                    Use this to verify your prompt before committing to a long run.
-    -noplan         Skip the pre-planning phase. Use for simple one-step tasks where
-                    a full plan breakdown would add overhead with no benefit.
-    -profile <name> Load a saved profile's flags. Command-line flags override profile values.
-                    See: orchclaude profile save/list/delete
+---
 
-  NAMED PROFILES
-    Save and reuse common flag combinations under a name.
-    Profiles are stored in: %USERPROFILE%\.orchclaude\profiles.json
+## All flags
 
-    orchclaude profile save <name> [flags]
-                    Save the given flags under a profile name.
-                    Example: orchclaude profile save bigrun -t 3h -i 80 -d "C:\Projects\MyApp"
+```
+REQUIRED
+  "prompt"            What to build. Be as detailed as you want.
+  -t <time>           Timeout. Format: 30m, 2h, 90m
 
-    orchclaude profile list
-                    List all saved profiles and their flags.
+OPTIONAL
+  -f <file>           Load prompt from a .md or .txt file
+  -i <n>              Max iterations before giving up (default: 40)
+  -d <path>           Working directory (default: current folder)
+  -v                  Verbose — print Claude's full output each iteration
+  -noqa               Skip the QA pass
+  -noplan             Skip pre-planning (use for simple one-step tasks)
+  -nobranch           Skip git worktree isolation, write directly to repo
+  -token <word>       Custom completion token (default: ORCHESTRATION_COMPLETE)
+  -cooldown <s>       Seconds between iterations (default: 5, use 0 to disable)
+  -breaker <n>        Circuit breaker: pause after N stalled iterations (default: 10)
+  -dryrun             Print the prompt that would be sent, then exit — no Claude call
+  -profile <name>     Load a saved flag profile (CLI flags override)
+  -agents <n>         Run N parallel Claude agents on independent subtasks (default: 1)
+  -model <tier>       Force model: light (haiku), standard (sonnet), heavy (opus),
+                      or a raw model ID
+  -modelprofile <p>   Model preset: fast | balanced | quality | auto (default: auto)
+  -budget <amount>    Pause and confirm if estimated cost exceeds this (e.g. -budget 0.50)
+  -autowait           On usage limit: sleep in-process for -waittime minutes, then resume
+  -autoschedule       On usage limit: create a Windows scheduled task and exit cleanly
+  -waittime <min>     Minutes to wait after a usage limit hit (default: 300 = 5 hours)
+  -n <number>         For orchclaude history — entries to show (default: 20)
+```
 
-    orchclaude profile delete <name>
-                    Remove a saved profile.
+---
 
-    Use a profile on run:
-                    orchclaude run -f project.md -profile bigrun
-                    (Flags on the command line override profile values.)
+## Commands
 
-  COST ESTIMATION
-    After every run (completion, timeout, or circuit breaker) orchclaude prints:
-      Estimated usage: ~N tokens input, ~N tokens output | Estimated cost: ~$X.XXXX (estimate only)
-    Token count is estimated from word count × 1.33. Cost uses Anthropic's published
-    rates: $3/M input tokens, $15/M output tokens. The estimate is also written to the
-    log file. It is always labeled as an estimate, not an exact figure.
+```
+orchclaude run "<prompt>" -t <timeout> [flags]
+orchclaude run -f <file>  -t <timeout> [flags]
+orchclaude resume         [-d <path>]          continue an interrupted run
+orchclaude status         [-d <path>]          show session state without resuming
+orchclaude explain        [-d <path>]          read-only Claude explanation of a directory
+orchclaude diff           [-d <path>] [-v]     git diff of everything changed in the last run
+orchclaude history        [-n <count>]         table of past runs with cost, duration, status
+orchclaude history clear                       wipe run history
+orchclaude metrics        [-d <path>]          per-iteration model/token/cost breakdown
+orchclaude dashboard      [-d <path>]          live web dashboard (localhost:7890)
+orchclaude log            [-d <path>]          live log viewer (localhost:7891)
+orchclaude profile save   <name> [flags]       save a flag combination for reuse
+orchclaude profile list                        list all saved profiles
+orchclaude profile delete <name>               remove a profile
+```
 
-  CRASH RECOVERY
-    resume          Continue an interrupted run (Ctrl+C, power loss, terminal close).
-                    Reads orchclaude-session.json in the work dir and picks up from the
-                    last completed iteration. Progress lines are preserved and fed back.
-    status          Show iteration count, elapsed time, and last progress line for the
-                    current session without resuming it.
+---
 
-  EXPLAIN
-    explain         Run Claude in read-only mode to explain what was built in a directory.
-                    Claude uses Read, Glob, and Grep to explore the project and writes a
-                    structured explanation covering what it does, how it is structured,
-                    and how to use it. No files are created or modified.
+## How it works
 
-      orchclaude explain                    (explain current directory)
-      orchclaude explain -d C:\Projects\App (explain a specific directory)
+**Pre-planning phase** (runs first unless `-noplan`)
+Claude breaks your task into a numbered subtask list with dependencies. The plan is saved to `orchclaude-plan.txt` and injected into every build iteration so Claude always knows what's next.
 
-  RUN HISTORY
-    history         Show a table of past orchclaude runs, newest first.
-                    Each row: date, status, work dir, duration, estimated cost,
-                    iterations, and the first ~32 chars of the prompt.
-                    History is written to ~/.orchclaude/history.json at the end of
-                    every run (complete, timeout, failed, usage_limit_paused).
-                    Capped at 200 entries (oldest are dropped).
+**Phase 1 — Build loop**
+Your prompt goes to Claude Code with a strict contract: do not stop until everything is done, output `ORCHESTRATION_COMPLETE` when finished. After each iteration, every `PROGRESS:` line Claude printed is fed back so it knows what it already completed and doesn't redo it. Loops until token found or timeout.
 
-      orchclaude history              (last 20 runs)
-      orchclaude history -n 50        (last 50 runs)
-      orchclaude history clear        (wipe history after y/n confirmation)
+**Phase 2 — QA pass** (automatic after build, skip with `-noqa`)
+Claude switches to adversarial tester mode. Reads all output files, checks for edge cases (empty input, overflow, unicode, rapid actions, localStorage unavailable, invalid dates, async failures), fixes each issue directly in the files. Prints findings as `QA_FINDING:` lines.
 
-  COMING SOON (Phase 1.3+)
-    -test <cmd>     Validation command to run after each completion claim.
+**Smart model routing** (automatic)
+First iteration always uses opus. Subsequent iterations are classified by a fast haiku call and routed to haiku / sonnet / opus based on complexity. If no progress is detected for 2 consecutive iterations, the model escalates (haiku → sonnet → opus). Override with `-model` or `-modelprofile`.
+
+**Git worktree isolation** (automatic in git repos)
+When running in a git repository, orchclaude creates a branch `orchclaude/<timestamp>` and a temporary worktree so all changes are isolated. At the end you're prompted to merge or discard. Use `-nobranch` to skip this and write directly.
+
+**Parallel agents** (`-agents <n>`)
+After planning, independent subtasks are split across N Claude agents running simultaneously. Each agent works in its own subdirectory. A final merge call integrates all outputs and handles conflicts.
+
+---
+
+## Usage limit handling
+
+When Claude Code returns a usage limit error, orchclaude can handle it in three ways:
+
+| Mode | Flag | Behavior |
+|---|---|---|
+| Manual (default) | _(none)_ | Saves session, prints resume time, exits. Run `orchclaude resume` when limit resets. |
+| Auto-wait | `-autowait` | Sleeps in-process, prints countdown every 10 minutes, resumes automatically. Terminal must stay open. |
+| Auto-schedule | `-autoschedule` | Creates a Windows scheduled task to resume at the reset time. Terminal can close. |
+
+**Known issue:** Auto-resume after usage limit is functional but has rough edges. If the run hits the limit on iteration 1 (before any progress), the resume will retry the same full prompt from scratch. Detection of the usage limit message is pattern-matched and may miss unusual error formats. Overnight unattended runs with `-autowait` work but expect occasional manual intervention.
+
+---
+
+## Named profiles
+
+Save flag combinations and reuse them:
+
+```
+orchclaude profile save bigrun -t 3h -i 80 -d "C:\Projects\MyApp"
+orchclaude profile list
+orchclaude run -f feature.md -profile bigrun
+orchclaude run -f feature.md -profile bigrun -t 30m    # CLI flag overrides profile
+```
+
+---
+
+## Output files
+
+All written to the working directory (`-d` or current folder):
+
+| File | Contents |
+|---|---|
+| `orchclaude-log.txt` | Full output from every iteration |
+| `orchclaude-progress.txt` | `PROGRESS:` lines only — what Claude completed each step |
+| `orchclaude-session.json` | Session state for crash recovery |
+| `orchclaude-plan.txt` | Subtask plan from the pre-planning phase |
+| `orchclaude-metrics.json` | Per-iteration model, tokens, cost, elapsed time |
 
 ---
 
 ## Examples
 
-  Quick one-liner:
-    orchclaude run "Build a Python script that renames all files in a folder by date" -t 20m
+```
+# Simple script
+orchclaude run "Build a Python script that renames all files in a folder by date" -t 20m
 
-  From a project spec file:
-    orchclaude run -f my-project.md -t 2h
+# From a spec file
+orchclaude run -f my-project.md -t 2h
 
-  Longer project with higher iteration cap:
-    orchclaude run -f big-project.md -t 3h -i 80
+# Verbose, skip QA, specific folder
+orchclaude run "Refactor the auth module" -t 30m -v -noqa -d "C:\Projects\MyApp"
 
-  Specific working directory:
-    orchclaude run "Add dark mode to the frontend" -t 45m -d "C:\Projects\MyApp"
+# Preview prompt without calling Claude
+orchclaude run -f project.md -t 2h -dryrun
 
-  See what Claude is doing in real time:
-    orchclaude run "Refactor the auth module" -t 30m -v
+# Parallel agents for a large project
+orchclaude run -f big-project.md -t 3h -agents 4
 
-  Skip QA for a quick one-off fix:
-    orchclaude run "Fix the typo in homepage" -t 10m -noqa
+# Always use opus (best quality, highest cost)
+orchclaude run -f project.md -t 2h -modelprofile quality
 
-  Preview what will be sent to Claude without running:
-    orchclaude run "Build a login form" -t 30m -dryrun
-    orchclaude run -f project.md -t 2h -dryrun
+# Stay under $1
+orchclaude run "Add dark mode" -t 1h -budget 1.00
 
-  Skip pre-planning for a simple one-step fix:
-    orchclaude run "Fix the typo in footer.html" -t 5m -noplan
+# Unattended overnight — auto-resumes after 5-hour usage limit reset
+orchclaude run -f project.md -t 2h -autowait -waittime 300
 
-  Save a profile for your main project:
-    orchclaude profile save myapp -t 2h -i 80 -d "C:\Projects\MyApp"
-    orchclaude profile list
-    orchclaude run -f feature.md -profile myapp
-    orchclaude run -f feature.md -profile myapp -t 30m    (overrides profile timeout)
+# Resume after a crash
+orchclaude resume
+orchclaude resume -d "C:\Projects\MyApp"
 
-  Explain what was built after a run:
-    orchclaude explain
-    orchclaude explain -d "C:\Projects\MyApp"
+# Check what changed
+orchclaude diff
+orchclaude diff -v    # full line-by-line
 
-  Review past runs:
-    orchclaude history
-    orchclaude history -n 50
-    orchclaude history clear
-
-  Require tests to pass before finishing (coming in Phase 1.1):
-    orchclaude run "Add the login feature" -t 1h -test "npm test"
-    orchclaude run -f project.md -t 2h -test "pytest"
-    orchclaude run "Implement sorting" -t 30m -test "cargo test"
+# Live monitoring
+orchclaude dashboard
+orchclaude log
+```
 
 ---
 
-## How It Works
+## Known issues
 
-  PRE-PLANNING PHASE (runs before build, unless -noplan is set)
-    1. A planning call is sent to Claude asking it to break your task into numbered
-       subtasks with dependencies. No code is written in this phase — output only.
-    2. The plan is saved to orchclaude-plan.txt and printed to the terminal.
-    3. Every subsequent build iteration receives the plan at the top of its prompt so
-       Claude always has a clear map of what to do next and in what order.
-
-  PHASE 1 - BUILD
-    1. Your prompt is sent to Claude Code with a strict contract:
-       "Do not stop until all requirements are met. Output ORCHESTRATION_COMPLETE when done."
-    2. After each iteration, PROGRESS lines Claude printed are collected and fed back
-       so Claude knows exactly what it already did and picks up where it left off.
-    3. Loop repeats until Claude outputs the completion token OR timeout is hit.
-
-  PHASE 2 - QA (automatic, runs after build)
-    1. Claude switches to adversarial tester mode and reads all output files.
-    2. It checks for edge cases across these categories:
-       - Empty, null, or missing input
-       - Extremely long strings
-       - Special characters and unicode
-       - Rapid repeated actions / button spam
-       - localStorage full or unavailable
-       - Negative numbers, zero, invalid date formats
-       - State left over from a previous session
-       - Async failures if any fetch code exists
-    3. Every issue found is fixed directly in the files (not just reported).
-    4. Findings print as:  QA_FINDING: <issue and fix applied>
-    5. Summary prints as:  QA_SUMMARY: <N issues found, N fixed>
-
-  Use -noqa to skip Phase 2 entirely.
+- **Usage limit auto-resume:** `-autowait` works but may lose the current iteration when it resumes (fix in progress). On first-iteration failures, the full prompt reruns from the start. Pattern matching for usage limit detection may miss some error message formats.
+- **Session flag restore on resume:** Not all flags are saved to the session file. A run resumed after a crash may not have the same `-autowait`, `-budget`, or `-modelprofile` as the original (fix in progress as 9.2).
+- **Windows only (tested):** All development and testing has been done exclusively on Windows. The Linux/macOS bash port (`orchclaude.sh`) is untested — it may work but treat it as experimental until confirmed otherwise.
+- **Template and webhook commands:** Referenced in some documentation but not reliably available in all install versions.
 
 ---
 
-## Token and Cost Estimate
+## Project spec file format
 
-  At the end of every run, orchclaude prints an estimated token count and cost:
+For larger projects, write your requirements in a `.md` file:
 
-    Estimated usage: ~4200 tokens input, ~1800 tokens output | Estimated cost: ~$0.0393 (estimate only)
+```markdown
+# Project: My App
 
-  This uses Anthropic's published rates for claude-sonnet-4-x:
-    Input:  $3.00 per 1M tokens
-    Output: $15.00 per 1M tokens
+## Goal
+Build a REST API that...
 
-  Token count is approximated as words x 1.33 — it is a rough guide, not a billing figure.
-  The estimate prints whether the run completes, times out, or hits the circuit breaker.
-  It is also written to orchclaude-log.txt.
+## Acceptance Criteria
+- [ ] Endpoint A returns correct data
+- [ ] Input validation rejects bad requests
+- [ ] Tests pass
 
----
-
-## Output Files
-
-  orchclaude-log.txt       Full output from every build and QA iteration
-  orchclaude-progress.txt  PROGRESS lines only - what Claude completed each step
-  orchclaude-session.json  Session state (iteration, status, flags) for crash recovery
-  orchclaude-plan.txt      Numbered subtask plan generated in the pre-planning phase
-
-All files are created in the working directory (-d flag or current folder).
-
----
-
-## Project Spec File Format
-
-For bigger projects write your requirements in a .md file:
-
-    # Project: My App
-
-    ## Goal
-    Build a ...
-
-    ## Acceptance Criteria
-    - [ ] Feature A works
-    - [ ] Feature B works
-    - [ ] Tests pass
-
-    ## Tech Stack
-    - Node.js, Express, ...
+## Tech Stack
+Node.js, Express, SQLite
+```
 
 Then run:
-    orchclaude run -f my-project.md -t 1h
+```
+orchclaude run -f my-project.md -t 2h
+```
 
 ---
 
-## Get Help
+## Get help
 
-    orchclaude help
-    orchclaude --help
+```
+orchclaude help
+orchclaude --help
+```
