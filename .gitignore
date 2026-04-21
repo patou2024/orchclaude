@@ -1,4 +1,6 @@
 orchclaude-log.txt
+orchclaude-log-*.txt
 orchclaude-progress.txt
 orchclaude-session.json
 orchclaude-plan.txt
+orchclaude-metrics.json

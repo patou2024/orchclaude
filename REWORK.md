@@ -36,7 +36,7 @@ output → classifier always falls through to "standard". In the worst case it f
 
 ### C3. Feature Backlog features not in repo PS1
 **Affected features:** `orchclaude template`, `Send-Webhook`, `.orchclauderc` loading
-**Problem:** STATUS.md marks all three as complete. The bin version (`C:\Users\pana5\bin\orchclaude.ps1`)
+**Problem:** STATUS.md marks all three as complete. The bin version (`bin\orchclaude.ps1`)
 contains partial template code (confirmed by parse errors at bin:586-620). The repo PS1 has
 none of these: no `template` command handler, no `Send-Webhook` function, no `.orchclauderc`
 file loading. The repo is behind the bin, but the bin has parse errors. Neither version is clean.
@@ -148,7 +148,7 @@ These do NOT crash PowerShell (they're in quoted strings, not operators) but the
 ---
 
 ### M2. `<name>` in Write-Host strings (bin version parse failure)
-**File:** `C:\Users\pana5\bin\orchclaude.ps1:586-620`
+**File:** `bin\orchclaude.ps1:586-620`
 **Problem:** The bin version has `Write-Host "orchclaude template show <name>"` and
 `Write-Error "Usage: orchclaude template show <name>"`. PowerShell interprets `<` as a
 redirection operator in unquoted contexts, but even inside double-quoted strings in some

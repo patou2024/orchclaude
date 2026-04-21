@@ -1,13 +1,13 @@
 # orchclaude — Self-Build Prompt
 
 This file is the project spec for `orchclaude buildurself`.
-Run it with:
+Run it from inside your local clone of the orchclaude repo:
 
-    orchclaude run -f C:\Users\pana5\orchclaude\BUILDSELF.md -t 2h -d C:\Users\pana5\orchclaude
+    orchclaude run -f BUILDSELF.md -t 2h -d <path-to-repo>
 
 For autonomous overnight runs (auto-resumes after usage limit, no human needed):
 
-    orchclaude run -f C:\Users\pana5\orchclaude\BUILDSELF.md -t 2h -d C:\Users\pana5\orchclaude -autowait -waittime 300 -nobranch -noplan
+    orchclaude run -f BUILDSELF.md -t 2h -d <path-to-repo> -autowait -waittime 300 -nobranch -noplan
 
 NOTE: Always use -nobranch and -noplan for self-builds.
 -nobranch: writes directly to the repo (worktree creates a temp copy that loses changes).
@@ -63,7 +63,7 @@ For each acceptance criterion listed in ROADMAP.md for this item:
 
 For flags: test with a short real prompt like:
   "Create a file called test-output.txt with the word hello inside it"
-  -t 5m -d C:\Users\pana5\orchclaude
+  -t 5m -d <path-to-repo>
 
 ## Step 6 — Update README and --help
 
@@ -72,7 +72,7 @@ If the feature adds a new flag or command:
 - Update ORCHCLAUDE-GUIDE.md with the new flag and an example
 - The --help output reads from ORCHCLAUDE-GUIDE.md so it updates automatically
 
-Also copy the updated README.md to C:\Users\pana5\ORCHCLAUDE-GUIDE.md so --help stays in sync.
+Also copy the updated README.md to ORCHCLAUDE-GUIDE.md in the repo root so --help stays in sync.
 
 ## Step 7 — Update STATUS.md
 
@@ -84,8 +84,9 @@ Also copy the updated README.md to C:\Users\pana5\ORCHCLAUDE-GUIDE.md so --help 
 ## Step 8 — Sync bin and commit
 
 First sync the updated script to the bin folder so the live orchclaude command stays current.
-IMPORTANT: always copy FROM the repo TO bin, never the other direction:
-  Copy-Item C:\Users\pana5\orchclaude\orchclaude.ps1 C:\Users\pana5\bin\orchclaude.ps1 -Force
+IMPORTANT: always copy FROM the repo TO bin, never the other direction.
+Find where orchclaude.ps1 was installed on this machine and copy it there.
+A common location is a bin folder on the PATH, or wherever `which orchclaude` / `Get-Command orchclaude` resolves.
 
 Then commit and push:
   git add -A

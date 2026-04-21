@@ -56,11 +56,18 @@ if ($modelprofile -ne "") {
 
 # ---- Help ----
 if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
-    $guideFile = "C:\Users\pana5\ORCHCLAUDE-GUIDE.md"
-    if (Test-Path $guideFile) {
+    # Look for guide file next to the script, then in the repo root, then in user home
+    $guideFile = ""
+    $candidates = @(
+        (Join-Path $PSScriptRoot "ORCHCLAUDE-GUIDE.md"),
+        (Join-Path $PSScriptRoot "README.md"),
+        (Join-Path $env:USERPROFILE "ORCHCLAUDE-GUIDE.md")
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { $guideFile = $c; break } }
+    if ($guideFile) {
         Get-Content $guideFile | ForEach-Object { Write-Host $_ }
     } else {
-        Write-Host "Guide file not found at $guideFile" -ForegroundColor Red
+        Write-Host "Guide file not found. Re-install orchclaude or run from the source directory." -ForegroundColor Red
         Write-Host "Quick reference:" -ForegroundColor Cyan
         Write-Host "  orchclaude run `"prompt`" -t 30m"
         Write-Host "  orchclaude run -f project.md -t 2h"

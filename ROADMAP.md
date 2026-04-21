@@ -1,4 +1,4 @@
-# orchclaude — Development Roadmap
+﻿# orchclaude â€” Development Roadmap
 
 This document defines every planned feature for orchclaude in priority order.
 It is the single source of truth for what gets built, in what order, and what "done" means for each item.
@@ -22,14 +22,14 @@ Each session that works on orchclaude should:
 
 ---
 
-## Phase 1 — Foundation Hardening (Windows)
+## Phase 1 â€” Foundation Hardening (Windows)
 
 Goal: make the core loop reliable and honest. Right now Claude self-reports completion.
 That is not good enough. Phase 1 makes completion verifiable from the outside.
 
 ---
 
-### 1.1 — External Validation Gate (`-test` flag)
+### 1.1 â€” External Validation Gate (`-test` flag)
 
 **What it is:**
 A `-test "<command>"` flag that runs a shell command after each iteration.
@@ -47,7 +47,7 @@ Tests passing means something.
   - Capture stdout, stderr, and exit code
   - If exit code 0: proceed to QA phase (or finish if -noqa)
   - If exit code non-zero: re-run Claude with a new section appended to the prompt:
-    "## TEST FAILURE — you output ORCHESTRATION_COMPLETE but tests failed. Fix the following and try again:"
+    "## TEST FAILURE â€” you output ORCHESTRATION_COMPLETE but tests failed. Fix the following and try again:"
     followed by the full test output
 - Log all test runs with timestamp to orchclaude-log.txt
 - Print test result clearly: TEST PASSED or TEST FAILED: <output summary>
@@ -62,7 +62,7 @@ Tests passing means something.
 
 ---
 
-### 1.2 — Crash Recovery (Resume Interrupted Runs)
+### 1.2 â€” Crash Recovery (Resume Interrupted Runs)
 
 **What it is:**
 If orchclaude is interrupted mid-run (terminal closed, power loss, Ctrl+C),
@@ -92,7 +92,7 @@ Right now a crashed run is a total loss. For long runs this is unacceptable.
 
 ---
 
-### 1.3 — Rate Limiting and Circuit Breaker
+### 1.3 â€” Rate Limiting and Circuit Breaker
 
 **What it is:**
 Prevents orchclaude from hammering the API when something is clearly wrong.
@@ -124,7 +124,7 @@ burns through your usage limit without making progress. This stops that.
 
 ---
 
-### 1.4 — Token / Cost Estimator
+### 1.4 â€” Token / Cost Estimator
 
 **What it is:**
 After each run, print an estimated token count and approximate cost.
@@ -150,7 +150,7 @@ Right now there is no feedback on how expensive a run was. Users have no idea.
 
 ---
 
-### 1.5 — `--dry-run` Flag
+### 1.5 â€” `--dry-run` Flag
 
 **What it is:**
 Prints the full prompt that would be sent to Claude, then exits without actually running.
@@ -174,7 +174,7 @@ Also useful for debugging the orchestration instructions being injected.
 
 ---
 
-### 1.6 — Usage Limit Detection and Auto-Resume
+### 1.6 â€” Usage Limit Detection and Auto-Resume
 
 **What it is:**
 Detects when a Claude Code run hits the usage/rate limit, saves state cleanly, and automatically
@@ -185,7 +185,7 @@ a Windows Task Scheduler entry and exits so the machine can be left unattended.
 **Why it matters:**
 Without this, hitting the usage limit kills the run silently and the user loses their session.
 This is the most disruptive real-world problem with long orchclaude builds.
-With this, hitting the limit is just a pause — the build continues automatically.
+With this, hitting the limit is just a pause â€” the build continues automatically.
 
 **Usage limit error patterns to detect (in Claude's output):**
 - "Claude AI usage limit reached"
@@ -207,9 +207,9 @@ State save on limit hit:
 - Print: "Usage limit hit at [time]. Will resume at [time+5h]."
 
 Add flags:
-- `-autowait` switch — sleep in-process and auto-resume (terminal must stay open)
-- `-autoschedule` switch — create a schtasks entry and exit cleanly (terminal can close)
-- `-waittime <minutes>` — override the wait duration. Default: 300 (5 hours)
+- `-autowait` switch â€” sleep in-process and auto-resume (terminal must stay open)
+- `-autoschedule` switch â€” create a schtasks entry and exit cleanly (terminal can close)
+- `-waittime <minutes>` â€” override the wait duration. Default: 300 (5 hours)
 - Neither flag set: save state and exit with a clear message telling the user to run `orchclaude resume`
 
 autowait mode:
@@ -259,13 +259,13 @@ Resume state check:
 
 ---
 
-## Phase 2 — Planning and Intelligence
+## Phase 2 â€” Planning and Intelligence
 
 Goal: make orchclaude smarter about how it approaches tasks, not just how it loops.
 
 ---
 
-### 2.1 — Pre-Planning Phase
+### 2.1 â€” Pre-Planning Phase
 
 **What it is:**
 Before the build loop starts, run one Claude call that breaks the task into a numbered
@@ -302,7 +302,7 @@ Making the plan explicit and persistent is a more reliable approach than leaving
 
 ---
 
-### 2.2 — Context Window Guard
+### 2.2 â€” Context Window Guard
 
 **What it is:**
 Detects when the accumulated prompt (base + progress + plan) is getting too large
@@ -329,7 +329,7 @@ When that happens the run silently degrades. This prevents it.
 
 ---
 
-### 2.3 — Named Profiles
+### 2.3 â€” Named Profiles
 
 **What it is:**
 Save and reuse common flag combinations under a name.
@@ -339,10 +339,10 @@ Users who always run with the same flags (same -test command, same -d directory,
 should not have to type them every time.
 
 **Implementation:**
-- Add `orchclaude profile save <name>` — saves current flags to a profile
-- Add `orchclaude profile list` — lists saved profiles
-- Add `orchclaude profile delete <name>` — removes a profile
-- Add `-profile <name>` flag to `orchclaude run` — loads a saved profile's flags
+- Add `orchclaude profile save <name>` â€” saves current flags to a profile
+- Add `orchclaude profile list` â€” lists saved profiles
+- Add `orchclaude profile delete <name>` â€” removes a profile
+- Add `-profile <name>` flag to `orchclaude run` â€” loads a saved profile's flags
   (flags on the command line override the profile)
 - Profiles stored in: C:\Users\<user>\.orchclaude\profiles.json
 
@@ -354,13 +354,13 @@ should not have to type them every time.
 
 ---
 
-## Phase 3 — Safety and Isolation
+## Phase 3 â€” Safety and Isolation
 
 Goal: make runs safe by default. No more writing directly to the working directory without a safety net.
 
 ---
 
-### 3.1 — Git Worktree Isolation
+### 3.1 â€” Git Worktree Isolation
 
 **What it is:**
 Each run creates a new git branch and worktree, operates there, and only merges back
@@ -388,7 +388,7 @@ your files. This is the safest way to let an AI agent modify a codebase.
 
 ---
 
-### 3.2 — Auto-Commit Checkpoints
+### 3.2 â€” Auto-Commit Checkpoints
 
 **What it is:**
 After each successful iteration (new PROGRESS lines detected), automatically commit
@@ -413,13 +413,13 @@ You can git log the orchclaude branch and see the project being built step by st
 
 ---
 
-## Phase 4 — Multi-Agent Execution
+## Phase 4 â€” Multi-Agent Execution
 
 Goal: run multiple Claude sessions in parallel on different parts of the project.
 
 ---
 
-### 4.1 — Parallel Agents
+### 4.1 â€” Parallel Agents
 
 **What it is:**
 Split a task into N independent subtasks (from the plan phase) and run them as
@@ -432,7 +432,7 @@ time dramatically for large projects.
 **Implementation:**
 - Add `-agents <number>` flag. Default: 1 (current behavior).
 - Requires Phase 2.1 (planning phase) to be complete first.
-- Parse the plan for tasks with `depends: none` — these can run in parallel.
+- Parse the plan for tasks with `depends: none` â€” these can run in parallel.
 - Spawn N PowerShell jobs, each running a scoped version of the build loop.
 - Each agent gets only its assigned subtask(s), its own worktree, its own log file.
 - Orchestrator waits for all agents to complete, then runs a merge phase.
@@ -444,17 +444,17 @@ time dramatically for large projects.
 - Each agent has its own log file: orchclaude-log-agent1.txt etc.
 - Orchestrator waits for all agents before proceeding
 - Merge phase produces a single coherent output
-- Documented clearly — this is a power feature with real complexity
+- Documented clearly â€” this is a power feature with real complexity
 
 ---
 
-## Phase 5 — Cross-Platform
+## Phase 5 â€” Cross-Platform
 
 Do not start this phase until every Phase 1-4 item is complete and stable on Windows.
 
 ---
 
-### 5.1 — Linux / macOS Port
+### 5.1 â€” Linux / macOS Port
 
 **What it is:**
 A bash/zsh equivalent of orchclaude.ps1 that provides identical functionality on Unix systems.
@@ -465,7 +465,7 @@ A bash/zsh equivalent of orchclaude.ps1 that provides identical functionality on
 - Test on Ubuntu 22.04 and macOS 13+
 - Add install instructions for both platforms to README
 
-### 5.2 — Package Distribution
+### 5.2 â€” Package Distribution
 
 - Publish to npm as `orchclaude` so users can install with `npm install -g orchclaude`
 - The package detects OS at install time and installs the right script
@@ -474,30 +474,30 @@ A bash/zsh equivalent of orchclaude.ps1 that provides identical functionality on
 
 ---
 
-## Phase 6 — GUI (stretch goal)
+## Phase 6 â€” GUI (stretch goal)
 
 Do not start this phase until Phase 5 is complete.
 
-### 6.1 — Status Dashboard
+### 6.1 â€” Status Dashboard
 
 A single HTML file (like the pomodoro timer, no install) that reads orchclaude-session.json
 and orchclaude-log.txt and displays live run status, progress, and history.
 
-### 6.2 — Log Viewer
+### 6.2 â€” Log Viewer
 
 Renders the log file with color coding: PROGRESS lines green, QA_FINDING lines yellow,
 errors red. Makes long runs easy to review.
 
 ---
 
-## Phase 7 — Smart Model Mode
+## Phase 7 â€” Smart Model Mode
 
 Goal: automatically route each part of a run to the right Claude model based on what the task actually needs.
 Not every iteration requires the most powerful and expensive model. This phase makes orchclaude cost-aware and intelligent about model selection.
 
 ---
 
-### 7.1 — Task Classifier
+### 7.1 â€” Task Classifier
 
 **What it is:**
 Before each Claude call, run a lightweight classification step that reads the current task
@@ -540,7 +540,7 @@ without affecting output quality.
 
 ---
 
-### 7.2 — Adaptive Escalation
+### 7.2 â€” Adaptive Escalation
 
 **What it is:**
 Automatically escalate the model tier when an iteration fails to make progress.
@@ -557,21 +557,21 @@ for the current model. Escalating to a stronger model often unblocks it.
 
 ---
 
-### 7.3 — Cost-Aware Budget Mode
+### 7.3 â€” Cost-Aware Budget Mode
 
 **What it is:**
 Extends the cost estimator from Phase 1.4 to actively gate the run.
 If estimated spend exceeds a `-budget` threshold, pause and ask the user before continuing.
 
 **Flags:**
-- `-budget <amount>` — e.g. `-budget 0.50` for 50 cents
+- `-budget <amount>` â€” e.g. `-budget 0.50` for 50 cents
 - When estimated cost exceeds the budget, print a warning and prompt: "Continue? (y/n)"
 - If y: double the budget and continue
 - If n: exit cleanly with a summary of what was completed
 
 ---
 
-### 7.4 — Model Profile Presets
+### 7.4 â€” Model Profile Presets
 
 **What it is:**
 Named model strategies the user can apply with a single flag.
@@ -583,14 +583,14 @@ Named model strategies the user can apply with a single flag.
 
 ---
 
-## Phase 8 — Run History
+## Phase 8 â€” Run History
 
 Goal: give users a persistent record of every orchclaude run so they can review what was built,
 how long it took, how much it cost, and whether it succeeded.
 
 ---
 
-### 8.1 — Run History Log (`orchclaude history`)
+### 8.1 â€” Run History Log (`orchclaude history`)
 
 **What it is:**
 After every run (complete, timeout, or failed), append a summary entry to a persistent history
@@ -639,7 +639,7 @@ Display format (one line per run):
 ```
   #1  2026-04-20 14:32  COMPLETE    ~/projects/myapp          4.2m  $0.03  7 iters  "Create a REST API..."
   #2  2026-04-20 11:15  TIMEOUT     ~/projects/myapp          30.0m $0.18  40 iters "Build a full..."
-  #3  2026-04-19 22:04  COMPLETE    C:\Users\pana5\orchclaude  1.1m  $0.01  3 iters  "Add a flag..."
+  #3  2026-04-19 22:04  COMPLETE    C:\Projects\orchclaude  1.1m  $0.01  3 iters  "Add a flag..."
 ```
 
 **Acceptance Criteria:**
@@ -653,14 +653,14 @@ Display format (one line per run):
 
 ---
 
-## Phase 9 — Advanced Metrics and Observability
+## Phase 9 â€” Advanced Metrics and Observability
 
 Goal: give users deep insights into run performance, cost breakdown by iteration, and historical trends.
 This phase transforms raw history data into actionable insights.
 
 ---
 
-### 9.1 — Per-Iteration Performance Metrics
+### 9.1 â€” Per-Iteration Performance Metrics
 
 **What it is:**
 Track detailed metrics for every iteration: elapsed time, input/output tokens, estimated cost,
@@ -701,7 +701,7 @@ Integration points:
 - `Write-Metrics` appends the iteration record to `orchclaude-metrics.json`
 - Make it non-fatal: catch errors and warn but do not crash
 - Also append a metrics line to `orchclaude-log.txt` for readability:
-  `[METRICS] Iter 3: opus | 18s elapsed | 2400→512 tokens | $0.018 | 3 PROGRESS lines`
+  `[METRICS] Iter 3: opus | 18s elapsed | 2400â†’512 tokens | $0.018 | 3 PROGRESS lines`
 
 History integration:
 - When writing a history entry (in Write-History), calculate:
@@ -750,26 +750,26 @@ Dashboard/display:
 
 These are ideas with no phase assigned yet. They get promoted to a phase when the time is right.
 
-- `orchclaude analytics` — visualize trends over historical runs (cost over time, success rate, etc.)
-- `orchclaude compare <run1> <run2>` — compare metrics and outcomes between two runs
-- Custom exit handlers — let users run cleanup scripts after runs complete
-- Slack thread notifications — reply in Slack threads for better conversation threading
-- Model cost estimator hints — let users test prompts on cheaper models before committing to full run
+- `orchclaude analytics` â€” visualize trends over historical runs (cost over time, success rate, etc.)
+- `orchclaude compare <run1> <run2>` â€” compare metrics and outcomes between two runs
+- Custom exit handlers â€” let users run cleanup scripts after runs complete
+- Slack thread notifications â€” reply in Slack threads for better conversation threading
+- Model cost estimator hints â€” let users test prompts on cheaper models before committing to full run
 
 ---
 
-## Phase 9 — Reliability & Bug Fixes
+## Phase 9 â€” Reliability & Bug Fixes
 
 Goal: fix known correctness bugs discovered in the code audit (see REWORK.md).
 Each item is a targeted fix with clear acceptance criteria.
 
 ---
 
-### 9.1 — Fix classifier missing --dangerously-skip-permissions
+### 9.1 â€” Fix classifier missing --dangerously-skip-permissions
 
 **What it is:** The `Get-TaskTier` function calls `claude` without `--dangerously-skip-permissions`.
-In a fresh session Claude prompts for tool permissions. Nobody responds → classifier returns empty
-→ always falls back to "standard" tier, silently breaking smart model routing.
+In a fresh session Claude prompts for tool permissions. Nobody responds â†’ classifier returns empty
+â†’ always falls back to "standard" tier, silently breaking smart model routing.
 
 **Implementation:**
 - In `Get-TaskTier`, add `--dangerously-skip-permissions` to the classifier claude call (1 line change)
@@ -784,7 +784,7 @@ In a fresh session Claude prompts for tool permissions. Nobody responds → clas
 
 ---
 
-### 9.2 — Fix Write-Session missing flags on resume
+### 9.2 â€” Fix Write-Session missing flags on resume
 
 **What it is:** When `orchclaude resume` restores a session, 8 flags are not saved or restored:
 `autowait, autoschedule, waittime, agents, model, budget, modelprofile, nobranch`.
@@ -793,7 +793,7 @@ A run that resumes after crash loses its model profile, budget limit, and usage-
 **Implementation:**
 - Add all 8 missing flags to the `flags` hash in `Write-Session` (PS1 and SH)
 - Add matching restore lines in the resume block (`$autowait = [bool]$session.flags.autowait`, etc.)
-- `Handle-UsageLimit` currently writes its own session object — replace with a call to `Write-Session "usage_limit_paused" $currentIter` + patch in `resumeAfter` field
+- `Handle-UsageLimit` currently writes its own session object â€” replace with a call to `Write-Session "usage_limit_paused" $currentIter` + patch in `resumeAfter` field
 
 **Acceptance Criteria:**
 - Run `orchclaude run "test" -t 5m -autowait -budget 0.5 -modelprofile quality -d C:\temp\test`
@@ -804,11 +804,11 @@ A run that resumes after crash loses its model profile, budget limit, and usage-
 
 ---
 
-### 9.3 — Fix modelprofile evaluated before profile loading
+### 9.3 â€” Fix modelprofile evaluated before profile loading
 
 **What it is:** The `-modelprofile` switch block runs at the top of the script (line ~42),
 before named profile (`-profile`) loading (~line 785). If a saved profile sets `modelprofile`,
-it is loaded AFTER the switch block already ran — so the profile's modelprofile is silently ignored.
+it is loaded AFTER the switch block already ran â€” so the profile's modelprofile is silently ignored.
 
 **Implementation:**
 - Move the entire modelprofile switch block (~10 lines) to after the profile loading block
