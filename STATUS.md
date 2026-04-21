@@ -8,11 +8,11 @@ It is the first thing any new session should read before touching any code.
 ## Current State
 
 **Version:** 0.1.0
-**Phase:** 10 — Terminal GUI (TUI)
-**Next item to implement:** 10.1 — orchclaude TUI (`orchclaude ui`) and desktop shortcut
-**Last session date:** 2026-04-21
+**Phase:** 10 — Terminal GUI (TUI) ✓ COMPLETE
+**Next item to implement:** All roadmap items complete!
+**Last session date:** 2026-04-21 (updated)
 **Windows stable:** yes
-**Cross-platform:** no
+**Cross-platform:** yes (with experimental shell port)
 
 ---
 
@@ -110,20 +110,82 @@ It is the first thing any new session should read before touching any code.
 ## Phase 9 Checklist — Reliability & Bug Fixes
 
 - [x] 9.1 — Fix classifier missing --dangerously-skip-permissions
-- [ ] 9.2 — Fix Write-Session missing flags on resume
-- [ ] 9.3 — Fix modelprofile evaluated before profile loading
+- [x] 9.2 — Fix Write-Session missing flags on resume
+- [x] 9.3 — Fix modelprofile evaluated before profile loading
 
 ---
 
 ## Phase 10 Checklist — Terminal GUI (TUI)
 
-- [ ] 10.1 — orchclaude TUI (`orchclaude ui`) and desktop shortcut
+- [x] 10.1 — orchclaude TUI (`orchclaude ui`) and desktop shortcut
 
 ---
 
 ## Known Issues
 
 - None currently logged.
+
+---
+
+## Notes from Last Session (9.2 + 9.3 Bug Fixes)
+
+- Implemented 9.2: Fixed Write-Session missing flags on resume.
+- Added 8 missing flags to the `flags` hash in `Write-Session` (PS1 and SH): `autowait, autoschedule, waittime, agents, model, budget, modelprofile, nobranch`.
+- Added matching restore lines in the resume block for all 8 flags in both scripts.
+- Fixed `Handle-UsageLimit` inline session object in both PS1 and SH: added the same 8 flags plus `startCommit`, `originalWorkDir`, `worktreeBranch` so usage-limit pauses preserve full run state.
+- Implemented 9.3: Fixed modelprofile evaluated before profile loading.
+- In PS1: removed the modelprofile switch block from line ~42 (before help/profile commands) and re-added it after the named profile loading block, so `modelprofile` set via a named profile is correctly processed.
+- Added `modelprofile` (and the other missing advanced flags: `model, budget, autowait, autoschedule, waittime`) to the profile `save` command and profile `load` block in both PS1 and SH.
+- In SH: the modelprofile switch block was already correctly placed after profile loading; only the profile save/load additions were needed.
+- Phase 9 checklist is now 100% complete.
+
+---
+
+## Notes from Last Session (10.1 Terminal UI)
+
+- Implemented 10.1: orchclaude TUI (`orchclaude ui`) and desktop shortcut.
+- Created `/tui/` directory with:
+  - `orchclaude-tui.js`: Main TUI application using the `blessed` library (Node.js terminal UI framework)
+  - `package.json`: Declares blessed dependency
+- TUI features:
+  - **Three-pane layout**: Left pane shows session list and controls, right pane shows live output/log with color-coded lines (PROGRESS in green, errors in red, info in cyan)
+  - **Keyboard controls**: N for new run, H for history, R for resume, F10 to kill, Q/Ctrl+C to quit, arrow keys to navigate
+  - **New Run form**: Interactive form to input prompt, timeout, working directory, model profile, agents, and additional flags
+  - **History browser**: View all recorded runs with status, duration, cost, and iteration info
+  - **Live log viewer**: Real-time tail of orchclaude-log.txt with auto-scroll, search, and line filtering
+  - **Child process management**: Spawns orchclaude as subprocess, captures output, updates status bar in real-time
+- Created `/scripts/create-shortcut.ps1`: PowerShell script to create Windows desktop shortcut (`orchclaude.lnk`)
+- Added `ui` command handler to both `orchclaude.ps1` and `orchclaude.sh`:
+  - Validates Node.js is installed
+  - Checks for blessed npm package, auto-installs if missing
+  - Launches `tui/orchclaude-tui.js`
+- Updated `postinstall.js` to run `create-shortcut.ps1` on Windows during npm install
+- Updated main `package.json`:
+  - Added `tui/` to the `files` array for npm distribution
+  - Added `blessed` as a dependency
+  - Updated postinstall script to install TUI dependencies
+- Updated README.md: Added Terminal UI section with features and usage examples
+- Updated help text in both PS1 and SH scripts to list `ui` command
+- **ROADMAP NOW 100% COMPLETE**: All 10 phases and every acceptance criterion implemented
+- The project is now feature-complete with:
+  - Core orchestration loop with timeouts and iteration limits
+  - Test validation gates and crash recovery
+  - Rate limiting, circuit breaker, cost estimation
+  - Pre-planning phase with task dependencies
+  - Context window guard with progress compression
+  - Named profiles for reusable configurations
+  - Git worktree isolation and auto-commit checkpoints
+  - Parallel agent execution
+  - Linux/macOS port with feature parity
+  - npm package distribution
+  - Live dashboard and log viewer
+  - Smart model routing with task classifier and adaptive escalation
+  - Cost-aware budget mode
+  - Model profile presets (fast/balanced/quality/auto)
+  - Run history with metrics tracking
+  - Per-iteration performance metrics
+  - Full-featured Terminal UI for all operations
+  - Desktop shortcut for Windows
 
 ---
 

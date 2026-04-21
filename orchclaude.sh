@@ -237,6 +237,7 @@ write_history() {
     OC_PROGRESS_FILE="$PROGRESS_FILE" \
     OC_SESSION_FILE="$SESSION_FILE" \
     OC_WORK_DIR="$WORK_DIR" \
+    OC_METRICS_FILE="$WORK_DIR/orchclaude-metrics.json" \
     OC_BASE_PROMPT="$BASE_PROMPT" \
     python3 - <<'PYEOF' 2>/dev/null || true
 import json, os
@@ -285,7 +286,37 @@ entry = {
     "estimatedCostUSD": cost,
     "progressCount": prog_count,
     "lastProgress": last_prog,
+    "avgTokensPerIter": 0,
+    "avgCostPerIter": 0,
+    "avgElapsedPerIter": 0,
+    "fastestIter": None,
+    "slowestIter": None,
+    "mostExpensiveIter": None,
 }
+
+# 9.1: aggregate per-iteration metrics if available
+metrics_file = os.environ.get("OC_METRICS_FILE", "")
+if metrics_file and os.path.exists(metrics_file):
+    try:
+        with open(metrics_file, encoding="utf-8") as mf:
+            mraw = json.load(mf)
+        marr = mraw if isinstance(mraw, list) else ([mraw] if mraw else [])
+        if marr:
+            n = len(marr)
+            sum_tok = sum(int(m.get("inputTokens", 0) or 0) + int(m.get("outputTokens", 0) or 0) for m in marr)
+            sum_cost = sum(float(m.get("estimatedCostUSD", 0) or 0) for m in marr)
+            sum_elap = sum(float(m.get("elapsedSeconds", 0) or 0) for m in marr)
+            entry["avgTokensPerIter"]  = int(round((sum_tok / n) / 100.0)) * 100
+            entry["avgCostPerIter"]    = round(sum_cost / n, 3)
+            entry["avgElapsedPerIter"] = round(sum_elap / n, 1)
+            fast = min(marr, key=lambda m: float(m.get("elapsedSeconds", 0) or 0))
+            slow = max(marr, key=lambda m: float(m.get("elapsedSeconds", 0) or 0))
+            exp  = max(marr, key=lambda m: float(m.get("estimatedCostUSD", 0) or 0))
+            entry["fastestIter"]       = int(fast.get("iterationNumber", 0) or 0)
+            entry["slowestIter"]       = int(slow.get("iterationNumber", 0) or 0)
+            entry["mostExpensiveIter"] = int(exp.get("iterationNumber",  0) or 0)
+    except Exception:
+        pass
 
 hist_file = os.environ["OC_HIST_FILE"]
 history = []
@@ -304,6 +335,76 @@ if len(history) > 200:
 with open(hist_file, "w", encoding="utf-8") as f:
     json.dump(history, f, indent=2, ensure_ascii=False)
 PYEOF
+}
+
+# 9.1: Write iteration metrics
+write_metrics() {
+    local iter_num="$1"
+    local model_used="$2"
+    local iter_start_time="$3"  # ISO 8601 timestamp
+    local iter_elapsed_sec="$4"
+    local iter_input_words="$5"
+    local iter_output_words="$6"
+    local had_progress="$7"      # 0 or 1
+    local iter_progress_lines="$8"  # comma-separated or empty
+    local iter_status="$9"       # success, retry, escalated, failed
+
+    local metrics_file="$WORK_DIR/orchclaude-metrics.json"
+    mkdir -p "$(dirname "$metrics_file")" 2>/dev/null || true
+
+    INPUT_TOKENS=$(printf "%.0f" "$(echo "$iter_input_words * 1.33" | bc 2>/dev/null || echo $iter_input_words)")
+    OUTPUT_TOKENS=$(printf "%.0f" "$(echo "$iter_output_words * 1.33" | bc 2>/dev/null || echo $iter_output_words)")
+    ITER_COST=$(printf "%.4f" "$(echo "scale=4; $INPUT_TOKENS / 1000000 * 3 + $OUTPUT_TOKENS / 1000000 * 15" | bc 2>/dev/null || echo 0)")
+
+    OC_METRICS_FILE="$metrics_file" \
+    OC_ITER_NUM="$iter_num" \
+    OC_MODEL_USED="$model_used" \
+    OC_ITER_START="$iter_start_time" \
+    OC_ITER_ELAPSED="$iter_elapsed_sec" \
+    OC_INPUT_TOKENS="$INPUT_TOKENS" \
+    OC_OUTPUT_TOKENS="$OUTPUT_TOKENS" \
+    OC_ITER_COST="$ITER_COST" \
+    OC_HAD_PROGRESS="$had_progress" \
+    OC_PROGRESS_LINES="$iter_progress_lines" \
+    OC_ITER_STATUS="$iter_status" \
+    python3 - <<'PYEOF' 2>/dev/null || true
+import json, os
+from datetime import datetime
+
+metrics_file = os.environ.get("OC_METRICS_FILE", "")
+if not metrics_file:
+    exit(1)
+
+entry = {
+    "iterationNumber": int(os.environ.get("OC_ITER_NUM", "0") or "0"),
+    "modelUsed": os.environ.get("OC_MODEL_USED", ""),
+    "startTime": os.environ.get("OC_ITER_START", ""),
+    "elapsedSeconds": float(os.environ.get("OC_ITER_ELAPSED", "0") or "0"),
+    "inputTokens": int(os.environ.get("OC_INPUT_TOKENS", "0") or "0"),
+    "outputTokens": int(os.environ.get("OC_OUTPUT_TOKENS", "0") or "0"),
+    "estimatedCostUSD": float(os.environ.get("OC_ITER_COST", "0") or "0"),
+    "hadProgress": os.environ.get("OC_HAD_PROGRESS", "0") == "1",
+    "progressLines": os.environ.get("OC_PROGRESS_LINES", "").split("\x00") if os.environ.get("OC_PROGRESS_LINES") else [],
+    "status": os.environ.get("OC_ITER_STATUS", "retry"),
+}
+
+existing = []
+if os.path.exists(metrics_file):
+    try:
+        with open(metrics_file, encoding="utf-8") as f:
+            raw = json.load(f)
+        existing = raw if isinstance(raw, list) else [raw]
+    except Exception:
+        pass
+
+merged = [entry] + existing
+with open(metrics_file, "w", encoding="utf-8") as f:
+    json.dump(merged, f, indent=2, ensure_ascii=False)
+PYEOF
+
+    # Log metrics line
+    PROGRESS_COUNT=$(echo "$iter_progress_lines" | grep -c "PROGRESS:" 2>/dev/null || echo 0)
+    write_log "[METRICS] Iter $iter_num : $model_used | $(printf "%.1f" "$iter_elapsed_sec")s | $INPUT_TOKENS→$OUTPUT_TOKENS tokens | \$$ITER_COST | $PROGRESS_COUNT progress lines" "$DGRAY"
 }
 
 test_usage_limit_error() {
@@ -370,8 +471,19 @@ data = {
         "v": $( [[ "$V" == "true" ]] && echo "True" || echo "False"),
         "cooldown": $COOLDOWN,
         "breaker": $BREAKER,
+        "autowait": $( [[ "$AUTOWAIT" == "true" ]] && echo "True" || echo "False"),
+        "autoschedule": $( [[ "$AUTOSCHEDULE" == "true" ]] && echo "True" || echo "False"),
+        "waittime": $WAITTIME,
+        "agents": $AGENTS,
+        "model": $(printf '%s' "$MODEL_OVERRIDE" | json_dumps_string 2>/dev/null || echo '""'),
+        "budget": $BUDGET,
+        "modelprofile": $(printf '%s' "$MODEL_PROFILE" | json_dumps_string 2>/dev/null || echo '""'),
+        "nobranch": $( [[ "$NOBRANCH" == "true" ]] && echo "True" || echo "False"),
     },
     "progressLines": $progress_json,
+    "startCommit": "$START_COMMIT",
+    "originalWorkDir": "$ORIGINAL_WORK_DIR",
+    "worktreeBranch": "$WORKTREE_BRANCH",
 }
 print(json.dumps(data, indent=2))
 PYEOF
@@ -463,6 +575,14 @@ data = {
         "v": $( [[ "$V" == "true" ]] && echo "True" || echo "False"),
         "cooldown": $COOLDOWN,
         "breaker": $BREAKER,
+        "autowait": $( [[ "$AUTOWAIT" == "true" ]] && echo "True" || echo "False"),
+        "autoschedule": $( [[ "$AUTOSCHEDULE" == "true" ]] && echo "True" || echo "False"),
+        "waittime": $WAITTIME,
+        "agents": $AGENTS,
+        "model": $(printf '%s' "$MODEL_OVERRIDE" | json_dumps_string 2>/dev/null || echo '""'),
+        "budget": $BUDGET,
+        "modelprofile": $(printf '%s' "$MODEL_PROFILE" | json_dumps_string 2>/dev/null || echo '""'),
+        "nobranch": $( [[ "$NOBRANCH" == "true" ]] && echo "True" || echo "False"),
     },
     "progressLines": $progress_json,
     "startCommit": "$START_COMMIT",
@@ -593,7 +713,8 @@ if [[ "$COMMAND" == "help" || "$COMMAND" == "-h" || "$SHOW_HELP" == "true" ]]; t
         printf "  orchclaude run -f project.md -t 2h\n"
         printf "  orchclaude resume\n"
         printf "  orchclaude status\n"
-        printf "\nCommands: run, resume, status, explain, diff, template, history, help, profile\n"
+        printf "  orchclaude ui\n"
+        printf "\nCommands: run, resume, status, explain, diff, template, history, metrics, ui, help, profile\n"
         printf "Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -webhook\n"
         printf "Profiles: orchclaude profile save <name> [flags]\n"
         printf "          orchclaude profile list\n"
@@ -631,6 +752,12 @@ d[name] = {
     "nobranch": $( [[ "$NOBRANCH" == "true" ]] && echo "True" || echo "False"),
     "agents": $AGENTS,
     "webhook": $(printf '%s' "$WEBHOOK_URL" | json_dumps_string),
+    "model": $(printf '%s' "$MODEL_OVERRIDE" | json_dumps_string),
+    "budget": $BUDGET,
+    "modelprofile": $(printf '%s' "$MODEL_PROFILE" | json_dumps_string),
+    "autowait": $( [[ "$AUTOWAIT" == "true" ]] && echo "True" || echo "False"),
+    "autoschedule": $( [[ "$AUTOSCHEDULE" == "true" ]] && echo "True" || echo "False"),
+    "waittime": $WAITTIME,
 }
 print(json.dumps(d, indent=2))
 PYEOF
@@ -1032,6 +1159,11 @@ if [[ "$COMMAND" == "history" ]]; then
         exit 0
     fi
 
+    if [[ ! "$HISTORY_N" =~ ^[0-9]+$ ]] || [[ "$HISTORY_N" -lt 1 ]]; then
+        printf "${RED}Bad -n value '%s'. Must be a positive integer.${NC}\n" "$HISTORY_N" >&2
+        exit 1
+    fi
+
     if [[ ! -f "$HIST_FILE" ]]; then
         printf "${YELLOW}No history yet. History is recorded after each run.${NC}\n"
         exit 0
@@ -1117,6 +1249,128 @@ PYEOF
 fi
 
 # ------------------------------------------------------------------ #
+# 9.1: Metrics command
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "metrics" ]]; then
+    M_WORK_DIR="${D:-$(pwd)}"
+    M_FILE="$M_WORK_DIR/orchclaude-metrics.json"
+
+    if [[ ! -f "$M_FILE" ]]; then
+        printf "${YELLOW}No metrics found. Metrics are recorded after each run in the work directory.${NC}\n"
+        exit 0
+    fi
+
+    OC_METRICS_FILE="$M_FILE" OC_WORK_DIR="$M_WORK_DIR" python3 - <<'PYEOF'
+import json, os, sys
+
+path = os.environ.get("OC_METRICS_FILE", "")
+wd   = os.environ.get("OC_WORK_DIR", "")
+
+try:
+    raw = json.load(open(path, encoding="utf-8"))
+    metrics = raw if isinstance(raw, list) else ([raw] if raw else [])
+except Exception as e:
+    print("\033[0;31mMetrics file is corrupt or unreadable:\033[0m", e)
+    sys.exit(1)
+
+if not metrics:
+    print("\033[1;33mNo metrics recorded yet.\033[0m")
+    sys.exit(0)
+
+NC     = "\033[0m"
+CYAN   = "\033[0;36m"
+GREEN  = "\033[0;32m"
+YELLOW = "\033[1;33m"
+RED    = "\033[0;31m"
+GRAY   = "\033[0;37m"
+
+status_colors = {
+    "success":   GREEN,
+    "escalated": YELLOW,
+    "retry":     GRAY,
+    "failed":    RED,
+}
+
+# metrics are newest-first on disk; sort by iteration number for display
+metrics_sorted = sorted(metrics, key=lambda m: int(m.get("iterationNumber", 0) or 0))
+
+bar = "-" * 110
+print()
+print(f"{CYAN}Iteration Metrics for {wd}{NC}")
+print(f"{CYAN}{bar}{NC}")
+print(f"{CYAN}  Iter  Model      Elapsed   Input     Output    Cost       Progress   Status{NC}")
+print(f"{CYAN}{bar}{NC}")
+
+total_sec = 0.0
+total_cost = 0.0
+success = retry = escal = failed = 0
+
+for m in metrics_sorted:
+    iter_n = int(m.get("iterationNumber", 0) or 0)
+    model  = str(m.get("modelUsed", ""))
+    elapsed = float(m.get("elapsedSeconds", 0) or 0)
+    input_t  = int(m.get("inputTokens", 0) or 0)
+    output_t = int(m.get("outputTokens", 0) or 0)
+    cost  = float(m.get("estimatedCostUSD", 0) or 0)
+    had   = bool(m.get("hadProgress", False))
+    plines = m.get("progressLines", []) or []
+    status = str(m.get("status", "retry"))
+
+    total_sec  += elapsed
+    total_cost += cost
+    if   status == "success":   success += 1
+    elif status == "retry":     retry   += 1
+    elif status == "escalated": escal   += 1
+    elif status == "failed":    failed  += 1
+
+    prog = f"{len(plines)} lines" if had else "none"
+    sc = status_colors.get(status, GRAY)
+    print(f"  {iter_n:>4}  {model:<9}  {elapsed:>6.1f}s  {input_t:>8}  {output_t:>8}  ${cost:>7.4f}  {prog:>9}   {sc}{status}{NC}")
+
+print(f"{CYAN}{bar}{NC}")
+avg_sec = total_sec / len(metrics_sorted) if metrics_sorted else 0
+print(f"{CYAN}  Summary: {len(metrics_sorted)} iterations | {total_sec:.1f}s total | ${total_cost:.4f} total | {avg_sec:.1f}s avg/iter | {success} success, {retry} retry, {escal} escalated, {failed} failed{NC}")
+print()
+PYEOF
+    exit 0
+fi
+
+# ------------------------------------------------------------------ #
+# UI command (Terminal UI)
+# ------------------------------------------------------------------ #
+if [[ "$COMMAND" == "ui" ]]; then
+    # Check if Node.js is available
+    if ! command -v node >/dev/null 2>&1; then
+        printf "${RED}Error: Node.js is required to run the TUI. Install from https://nodejs.org/${NC}\n" >&2
+        exit 1
+    fi
+
+    # Find orchclaude-tui.js
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    TUI_SCRIPT="$SCRIPT_DIR/tui/orchclaude-tui.js"
+
+    if [[ ! -f "$TUI_SCRIPT" ]]; then
+        printf "${RED}Error: TUI script not found at %s${NC}\n" "$TUI_SCRIPT" >&2
+        printf "${YELLOW}Make sure orchclaude is installed correctly${NC}\n" >&2
+        exit 1
+    fi
+
+    # Check if blessed is installed
+    TUI_DIR="$(dirname "$TUI_SCRIPT")"
+    if [[ ! -d "$TUI_DIR/node_modules/blessed" ]]; then
+        printf "${CYAN}Installing TUI dependencies...${NC}\n"
+        (cd "$TUI_DIR" && npm install >/dev/null 2>&1) || {
+            printf "${RED}Error installing dependencies${NC}\n" >&2
+            exit 1
+        }
+    fi
+
+    # Launch the TUI
+    node "$TUI_SCRIPT"
+    exit $?
+fi
+
+# ------------------------------------------------------------------ #
 # Resume command
 # ------------------------------------------------------------------ #
 RESUME_MODE=false
@@ -1164,6 +1418,14 @@ print(f"TOKEN={shlex.quote(str(f.get('token','ORCHESTRATION_COMPLETE')))}")
 print(f"V={'true' if f.get('v') else 'false'}")
 print(f"COOLDOWN={int(f.get('cooldown',5))}")
 print(f"BREAKER={int(f.get('breaker',10))}")
+print(f"AUTOWAIT={'true' if f.get('autowait') else 'false'}")
+print(f"AUTOSCHEDULE={'true' if f.get('autoschedule') else 'false'}")
+print(f"WAITTIME={int(f.get('waittime',300))}")
+print(f"AGENTS={int(f.get('agents',1))}")
+print(f"MODEL_OVERRIDE={shlex.quote(str(f.get('model','') or ''))}")
+print(f"BUDGET={float(f.get('budget',0))}")
+print(f"MODEL_PROFILE={shlex.quote(str(f.get('modelprofile','') or ''))}")
+print(f"NOBRANCH={'true' if f.get('nobranch') else 'false'}")
 print(f"START_ITER={int(d.get('currentIteration',0)) + 1}")
 PYEOF
 )"
@@ -1264,6 +1526,12 @@ print(f"_P_NOPLAN={'true' if p.get('noplan') else 'false'}")
 print(f"_P_NOBRANCH={'true' if p.get('nobranch') else 'false'}")
 print(f"_P_AGENTS={int(p.get('agents',1))}")
 print(f"_P_WEBHOOK={q(p.get('webhook',''))}")
+print(f"_P_MODEL={q(p.get('model','') or '')}")
+print(f"_P_BUDGET={float(p.get('budget',0))}")
+print(f"_P_MODELPROFILE={q(p.get('modelprofile','') or '')}")
+print(f"_P_AUTOWAIT={'true' if p.get('autowait') else 'false'}")
+print(f"_P_AUTOSCHEDULE={'true' if p.get('autoschedule') else 'false'}")
+print(f"_P_WAITTIME={int(p.get('waittime',300))}")
 PYEOF
 )"
     # Apply profile values (profile overrides .orchclauderc; CLI overrides both)
@@ -1279,6 +1547,12 @@ PYEOF
     [[ "$_CLI_NOBRANCH"     != "true" ]] && NOBRANCH="$_P_NOBRANCH"
     [[ "$_CLI_AGENTS"       != "true" ]] && AGENTS=$_P_AGENTS
     [[ "$_CLI_WEBHOOK"      != "true" ]] && WEBHOOK_URL="$_P_WEBHOOK"
+    [[ "$_CLI_MODEL"        != "true" ]] && MODEL_OVERRIDE="$_P_MODEL"
+    [[ "$_CLI_BUDGET"       != "true" ]] && BUDGET=$_P_BUDGET
+    [[ "$_CLI_MODELPROFILE" != "true" ]] && MODEL_PROFILE="$_P_MODELPROFILE"
+    [[ "$_CLI_AUTOWAIT"     != "true" ]] && AUTOWAIT="$_P_AUTOWAIT"
+    [[ "$_CLI_AUTOSCHEDULE" != "true" ]] && AUTOSCHEDULE="$_P_AUTOSCHEDULE"
+    [[ "$_CLI_WAITTIME"     != "true" ]] && WAITTIME=$_P_WAITTIME
 fi
 
 # ---- 7.4: Model Profile Presets (evaluated after RC + profile so all sources are resolved) ----
@@ -1314,6 +1588,31 @@ fi
 if [[ "$AGENTS" -gt 1 && "$RESUME_MODE" == "true" ]]; then
     printf "${YELLOW}WARNING: -agents is not supported in resume mode. Running single-agent.${NC}\n"
     AGENTS=1
+fi
+
+# ------------------------------------------------------------------ #
+# Validate -budget (must be a non-negative number)
+# ------------------------------------------------------------------ #
+if [[ -n "$BUDGET" && "$BUDGET" != "0" ]]; then
+    _budget_ok=$(python3 -c "
+try:
+    v = float('${BUDGET}')
+    print('ok' if v >= 0 else 'bad')
+except:
+    print('bad')
+" 2>/dev/null || echo "bad")
+    if [[ "$_budget_ok" != "ok" ]]; then
+        printf "${RED}Bad -budget value '%s'. Must be a non-negative number (e.g. 1.50).${NC}\n" "$BUDGET" >&2
+        exit 1
+    fi
+fi
+
+# ------------------------------------------------------------------ #
+# Validate -waittime (must be a positive integer)
+# ------------------------------------------------------------------ #
+if [[ ! "$WAITTIME" =~ ^[0-9]+$ ]] || [[ "$WAITTIME" -lt 1 ]]; then
+    printf "${RED}Bad -waittime value '%s'. Must be a positive integer (minutes).${NC}\n" "$WAITTIME" >&2
+    exit 1
 fi
 
 # ------------------------------------------------------------------ #
@@ -1412,7 +1711,7 @@ fi
 # Validate command
 # ------------------------------------------------------------------ #
 if [[ "$RESUME_MODE" != "true" && "$COMMAND" != "run" ]]; then
-    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, template, history, help, profile${NC}\n" "$COMMAND" >&2
+    printf "${RED}Unknown command '%s'. Use: orchclaude run, resume, status, explain, diff, template, history, metrics, help, profile${NC}\n" "$COMMAND" >&2
     exit 1
 fi
 
@@ -1528,6 +1827,7 @@ elif [[ "$DRYRUN" != "true" ]]; then
 fi
 
 SCRIPT_START=$SECONDS   # bash built-in: seconds since shell started
+START_EPOCH=$(date +%s)
 START_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 TIMEOUT_DISPLAY="$T"
 
@@ -2091,9 +2391,18 @@ Continue from where you left off. Output $TOKEN when everything is done."
     write_log "MODEL: $BUILD_LABEL (build iter $iter)" "$DCYAN"
     echo "[$(date +%H:%M:%S)] MODEL: $BUILD_LABEL (build iter $iter)" >> "$LOG_FILE"
     write_log "Calling Claude (build)..." "$YELLOW"
+
+    # 9.1: Capture iteration metrics start
+    ITER_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
+    ITER_INPUT_WORD_COUNT=$(get_word_count "$FULL_PROMPT")
+
     TOTAL_INPUT_WORDS=$((TOTAL_INPUT_WORDS + $(get_word_count "$FULL_PROMPT")))
     OUTPUT=$(invoke_claude "$FULL_PROMPT" "build_${iter}" "$BUILD_MODEL_ID")
+    ITER_OUTPUT_WORD_COUNT=$(get_word_count "$OUTPUT")
     TOTAL_OUTPUT_WORDS=$((TOTAL_OUTPUT_WORDS + $(get_word_count "$OUTPUT")))
+
+    # 9.1: Calculate iteration elapsed time
+    ITER_ELAPSED_SEC=$((SECONDS - SCRIPT_START - elapsed))
 
     # ---- 1.6: Usage Limit Detection ----
     if test_usage_limit_error "$OUTPUT"; then
@@ -2105,10 +2414,18 @@ Continue from where you left off. Output $TOKEN when everything is done."
 
     [[ "$V" == "true" ]] && printf '%s\n' "$OUTPUT"
 
+    # 9.1: Capture PROGRESS lines from this iteration
+    ITER_PROGRESS_LINES=""
     while IFS= read -r oline; do
         if [[ "$oline" =~ ^PROGRESS: ]]; then
             echo "$oline" >> "$PROGRESS_FILE"
             write_log "$oline" "$GREEN"
+            if [[ -z "$ITER_PROGRESS_LINES" ]]; then
+                ITER_PROGRESS_LINES="$oline"
+            else
+                ITER_PROGRESS_LINES="$ITER_PROGRESS_LINES
+$oline"
+            fi
         fi
     done <<< "$OUTPUT"
 
@@ -2161,6 +2478,24 @@ Continue from where you left off. Output $TOKEN when everything is done."
             fi
         fi
     fi
+
+    # 9.1: Write iteration metrics
+    ITER_STATUS="retry"
+    if [[ "$PROGRESS_COUNT_AFTER" -gt "$PROGRESS_COUNT_BEFORE" ]]; then
+        ITER_STATUS="success"
+    elif [[ "$ESCALATED_TO_STANDARD" == "true" && "$BUILD_TIER" == "light" ]]; then
+        ITER_STATUS="escalated"
+    elif [[ "$ESCALATED_TO_HEAVY" == "true" && "$BUILD_TIER" == "standard" ]]; then
+        ITER_STATUS="escalated"
+    fi
+
+    # Convert progress lines to null-separated format for shell-to-python transfer
+    PROGRESS_FOR_METRICS=""
+    if [[ -n "$ITER_PROGRESS_LINES" ]]; then
+        PROGRESS_FOR_METRICS=$(printf '%s\0' "$ITER_PROGRESS_LINES")
+    fi
+
+    write_metrics "$iter" "$BUILD_LABEL" "$ITER_START_TIME" "$ITER_ELAPSED_SEC" "$ITER_INPUT_WORD_COUNT" "$ITER_OUTPUT_WORD_COUNT" "$([ "$PROGRESS_COUNT_AFTER" -gt "$PROGRESS_COUNT_BEFORE" ] && echo 1 || echo 0)" "$PROGRESS_FOR_METRICS" "$ITER_STATUS"
 
     write_session "running" "$iter"
 

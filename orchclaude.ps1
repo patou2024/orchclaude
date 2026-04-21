@@ -39,20 +39,7 @@ param(
     [int]$n = 20                # -n <number>     : for 'orchclaude history' - entries to show (default 20)
 )
 
-# ---- 7.4: Model Profile Presets ----
-$noEscalation = $false
-if ($modelprofile -ne "") {
-    switch ($modelprofile.ToLower()) {
-        "fast"     { if (-not $model) { $model = "light"  } }
-        "quality"  { if (-not $model) { $model = "heavy"  } }
-        "balanced" { $noEscalation = $true }
-        "auto"     { }   # classifier + escalation (default)
-        default    {
-            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
-            exit 1
-        }
-    }
-}
+$noEscalation = $false   # evaluated after profile loading below
 
 # ---- Help ----
 if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
@@ -73,7 +60,8 @@ if ($Command -eq "help" -or $Command -eq "-h" -or $help) {
         Write-Host "  orchclaude run -f project.md -t 2h"
         Write-Host "  orchclaude resume              (continue interrupted run)"
         Write-Host "  orchclaude status              (show session state)"
-        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, history, metrics, help, profile"
+        Write-Host "  orchclaude ui                  (launch Terminal UI)"
+        Write-Host "  Commands: run, resume, status, dashboard, log, explain, diff, history, metrics, ui, help, profile"
         Write-Host "  Flags: -t -i -f -d -v -noqa -token -cooldown -breaker -dryrun -noplan -nobranch -profile -agents -model -budget -modelprofile -autowait -autoschedule -waittime -n"
         Write-Host "  Profiles: orchclaude profile save <name> [flags]"
         Write-Host "            orchclaude profile list"
@@ -112,17 +100,23 @@ if ($Command -eq "profile") {
         }
         $profiles = Get-Profiles
         $profiles[$SubArg] = [ordered]@{
-            t        = $t
-            i        = $i
-            d        = $d
-            v        = [bool]$v
-            noqa     = [bool]$noqa
-            token    = $token
-            cooldown = $cooldown
-            breaker  = $breaker
-            noplan   = [bool]$noplan
-            nobranch = [bool]$nobranch
-            agents   = $agents
+            t            = $t
+            i            = $i
+            d            = $d
+            v            = [bool]$v
+            noqa         = [bool]$noqa
+            token        = $token
+            cooldown     = $cooldown
+            breaker      = $breaker
+            noplan       = [bool]$noplan
+            nobranch     = [bool]$nobranch
+            agents       = $agents
+            model        = $model
+            budget       = $budget
+            modelprofile = $modelprofile
+            autowait     = [bool]$autowait
+            autoschedule = [bool]$autoschedule
+            waittime     = $waittime
         }
         Save-Profiles $profiles
         Write-Host "Profile '$SubArg' saved to $profilesFile" -ForegroundColor Green
@@ -710,6 +704,47 @@ if ($Command -eq "metrics") {
     exit 0
 }
 
+# ---- 10.1: Terminal UI command ----
+if ($Command -eq "ui") {
+    # Find Node.js
+    $nodeCmd = $null
+    try {
+        $nodeCmd = (Get-Command node -ErrorAction SilentlyContinue).Source
+    } catch { }
+
+    if (-not $nodeCmd) {
+        Write-Host "Error: Node.js is required to run the TUI. Install from https://nodejs.org/" -ForegroundColor Red
+        exit 1
+    }
+
+    # Find orchclaude-tui.js
+    $tuiScript = Join-Path $PSScriptRoot "tui" "orchclaude-tui.js"
+    if (-not (Test-Path $tuiScript)) {
+        Write-Host "Error: TUI script not found at $tuiScript" -ForegroundColor Red
+        Write-Host "Make sure orchclaude is installed correctly (try: npm install -g orchclaude)" -ForegroundColor Yellow
+        exit 1
+    }
+
+    # Check if blessed is installed
+    $tuidir = Split-Path $tuiScript
+    $nodeModules = Join-Path $tuidir "node_modules"
+    if (-not (Test-Path (Join-Path $nodeModules "blessed"))) {
+        Write-Host "Installing TUI dependencies..." -ForegroundColor Cyan
+        try {
+            Push-Location $tuidir
+            & npm install 2>&1 | Out-Null
+            Pop-Location
+        } catch {
+            Write-Host "Error installing dependencies: $_" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # Launch the TUI
+    & $nodeCmd $tuiScript
+    exit $LASTEXITCODE
+}
+
 # ---- Resume command ----
 $resumeMode = $false
 $startIter  = 1
@@ -756,15 +791,23 @@ if ($Command -eq "resume") {
     Write-Host "Interrupted session found (status: $($session.status)). Resuming from iteration $($session.currentIteration + 1)..." -ForegroundColor Cyan
 
     # Restore all flags from saved session
-    $basePrompt  = $session.prompt
-    $t           = $session.flags.t
-    $i           = $session.flags.i
-    $noqa        = [bool]$session.flags.noqa
-    $token       = $session.flags.token
-    $v           = [bool]$session.flags.v
-    $cooldown    = [int]$session.flags.cooldown
-    $breaker     = [int]$session.flags.breaker
-    $startIter   = $session.currentIteration + 1
+    $basePrompt    = $session.prompt
+    $t             = $session.flags.t
+    $i             = $session.flags.i
+    $noqa          = [bool]$session.flags.noqa
+    $token         = $session.flags.token
+    $v             = [bool]$session.flags.v
+    $cooldown      = [int]$session.flags.cooldown
+    $breaker       = [int]$session.flags.breaker
+    $autowait      = [bool]$session.flags.autowait
+    $autoschedule  = [bool]$session.flags.autoschedule
+    $waittime      = if ($session.flags.waittime) { [int]$session.flags.waittime } else { 300 }
+    $agents        = if ($session.flags.agents)   { [int]$session.flags.agents }   else { 1 }
+    $model         = if ($session.flags.model)    { "$($session.flags.model)" }    else { "" }
+    $budget        = if ($session.flags.budget)   { [double]$session.flags.budget } else { 0 }
+    $modelprofile  = if ($session.flags.modelprofile) { "$($session.flags.modelprofile)" } else { "" }
+    $nobranch      = [bool]$session.flags.nobranch
+    $startIter     = $session.currentIteration + 1
     $savedProgressLines = $session.progressLines
 
     $resumeMode = $true
@@ -786,9 +829,29 @@ if ($profile -and -not $resumeMode) {
     if (-not $PSBoundParameters.ContainsKey('token'))    { $token    = $p.token }
     if (-not $PSBoundParameters.ContainsKey('cooldown')) { $cooldown = [int]$p.cooldown }
     if (-not $PSBoundParameters.ContainsKey('breaker'))  { $breaker  = [int]$p.breaker }
-    if (-not $PSBoundParameters.ContainsKey('noplan'))   { $noplan   = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
-    if (-not $PSBoundParameters.ContainsKey('nobranch')) { $nobranch = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
-    if (-not $PSBoundParameters.ContainsKey('agents'))   { $agents   = if ($p.agents) { [int]$p.agents } else { 1 } }
+    if (-not $PSBoundParameters.ContainsKey('noplan'))      { $noplan      = [System.Management.Automation.SwitchParameter][bool]$p.noplan }
+    if (-not $PSBoundParameters.ContainsKey('nobranch'))    { $nobranch    = [System.Management.Automation.SwitchParameter][bool]$p.nobranch }
+    if (-not $PSBoundParameters.ContainsKey('agents'))      { $agents      = if ($p.agents)   { [int]$p.agents }     else { 1 } }
+    if (-not $PSBoundParameters.ContainsKey('model'))       { $model       = if ($p.model)    { "$($p.model)" }      else { "" } }
+    if (-not $PSBoundParameters.ContainsKey('budget'))      { $budget      = if ($p.budget)   { [double]$p.budget }  else { 0 } }
+    if (-not $PSBoundParameters.ContainsKey('modelprofile')){ $modelprofile= if ($p.modelprofile) { "$($p.modelprofile)" } else { "" } }
+    if (-not $PSBoundParameters.ContainsKey('autowait'))    { $autowait    = [System.Management.Automation.SwitchParameter][bool]$p.autowait }
+    if (-not $PSBoundParameters.ContainsKey('autoschedule')){ $autoschedule= [System.Management.Automation.SwitchParameter][bool]$p.autoschedule }
+    if (-not $PSBoundParameters.ContainsKey('waittime'))    { $waittime    = if ($p.waittime) { [int]$p.waittime }   else { 300 } }
+}
+
+# ---- 7.4: Model Profile Presets (evaluated after profile loading so profile values are applied) ----
+if ($modelprofile -ne "") {
+    switch ($modelprofile.ToLower()) {
+        "fast"     { if (-not $model) { $model = "light"  } }
+        "quality"  { if (-not $model) { $model = "heavy"  } }
+        "balanced" { $noEscalation = $true }
+        "auto"     { }
+        default    {
+            Write-Host "Unknown -modelprofile '$modelprofile'. Valid values: fast, balanced, quality, auto" -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
 # ---- Validate agents flag ----
@@ -811,7 +874,7 @@ if ($agents -gt 1 -and $resumeMode) {
 
 # ---- Require "run" for non-resume/resume/status/help ----
 if (-not $resumeMode -and $Command -ne "run") {
-    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude history, orchclaude metrics, orchclaude help, orchclaude profile"
+    Write-Error "Unknown command '$Command'. Use: orchclaude run, orchclaude resume, orchclaude status, orchclaude dashboard, orchclaude log, orchclaude explain, orchclaude diff, orchclaude history, orchclaude metrics, orchclaude ui, orchclaude help, orchclaude profile"
     exit 1
 }
 
@@ -940,13 +1003,21 @@ function Write-Session($status, $currentIteration) {
         currentIteration = $currentIteration
         prompt           = $basePrompt
         flags            = [ordered]@{
-            t        = $t
-            i        = $i
-            noqa     = [bool]$noqa
-            token    = $token
-            v        = [bool]$v
-            cooldown = $cooldown
-            breaker  = $breaker
+            t            = $t
+            i            = $i
+            noqa         = [bool]$noqa
+            token        = $token
+            v            = [bool]$v
+            cooldown     = $cooldown
+            breaker      = $breaker
+            autowait     = [bool]$autowait
+            autoschedule = [bool]$autoschedule
+            waittime     = $waittime
+            agents       = $agents
+            model        = $model
+            budget       = $budget
+            modelprofile = $modelprofile
+            nobranch     = [bool]$nobranch
         }
         progressLines    = $progressLines
         startCommit      = $startCommit
@@ -1228,15 +1299,26 @@ function Handle-UsageLimit($currentIter) {
         resumeAfter      = $resumeAt.ToString("o")
         pausedAt         = $now.ToString("o")
         flags            = [ordered]@{
-            t        = $t
-            i        = $i
-            noqa     = [bool]$noqa
-            token    = $token
-            v        = [bool]$v
-            cooldown = $cooldown
-            breaker  = $breaker
+            t            = $t
+            i            = $i
+            noqa         = [bool]$noqa
+            token        = $token
+            v            = [bool]$v
+            cooldown     = $cooldown
+            breaker      = $breaker
+            autowait     = [bool]$script:autowait
+            autoschedule = [bool]$script:autoschedule
+            waittime     = $script:waittime
+            agents       = $agents
+            model        = $model
+            budget       = $budget
+            modelprofile = $modelprofile
+            nobranch     = [bool]$nobranch
         }
         progressLines    = $progressLines
+        startCommit      = $startCommit
+        originalWorkDir  = $originalWorkDir
+        worktreeBranch   = $worktreeBranch
     }
     $sessionData | ConvertTo-Json -Depth 5 | Set-Content $sessionFile -Encoding UTF8
     Add-Content $logFile "[$($now.ToString('HH:mm:ss'))] USAGE_LIMIT_PAUSED: iteration $currentIter, resumeAfter=$($resumeAt.ToString('o'))"
