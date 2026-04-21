@@ -821,3 +821,111 @@ it is loaded AFTER the switch block already ran â€” so the profile's modelp
 - Without fix it shows `auto (classifier + adaptive escalation)`
 
 ---
+
+## Phase 10 — Terminal GUI (TUI)
+
+Goal: A full-screen terminal interface for orchclaude. Users should never need to type raw
+orchclaude commands again. Everything — launching runs, watching live output, browsing history,
+resuming sessions — happens from within the TUI. A desktop shortcut makes it one double-click
+to open.
+
+---
+
+### 10.1 — orchclaude TUI (`orchclaude ui`)
+
+**What it is:**
+A full-screen terminal UI written in Node.js using the `blessed` library (already available via
+npm). Launched with `orchclaude ui` or by double-clicking the desktop shortcut. Runs orchclaude
+sessions as child processes inside the TUI itself, capturing their output live.
+
+**Layout (three-pane):**
+
+```
++---------------------------+--------------------------------------+
+|  SESSIONS          [F1]   |  OUTPUT / LOG                        |
+|---------------------------|                                      |
+|  > [RUNNING] buildself    |  [18:21] MODEL: opus (build iter 3)  |
+|    [PAUSED]  myapp        |  [18:21] PROGRESS: wrote auth.js     |
+|    [DONE]    pomodoro     |  [18:21] Token not found. Looping... |
+|    [DONE]    rest-api     |                                      |
+|                           |                                      |
+|  [N] New run              |                                      |
+|  [R] Resume               |                                      |
+|  [H] History              |                                      |
+|  [Q] Quit                 |                                      |
++---------------------------+--------------------------------------+
+|  STATUS: running  |  iter 3/40  |  elapsed 4m  |  ~$0.02  [F2=flags] [F10=kill]
++----------------------------------------------------------------------+
+```
+
+**Screens / views:**
+
+1. **Main dashboard** (default)
+   - Left pane: list of sessions from this TUI session + recent history entries
+   - Right pane: live-tailing output of the selected session
+   - Bottom bar: status of selected session (status, iter, elapsed, cost estimate)
+   - Keyboard shortcuts shown at bottom
+
+2. **New Run screen** (press N)
+   - Form fields: Prompt (multiline text area), Timeout (-t), Working dir (-d),
+     Max iters (-i), Model profile (-modelprofile), Agents (-agents), Flags (-noqa, -noplan,
+     -nobranch, -autowait, checkboxes)
+   - [Enter] to launch, [Esc] to cancel
+   - On launch: spawns `orchclaude run` as a child process, streams output to right pane,
+     adds entry to session list
+
+3. **History screen** (press H)
+   - Full-screen table: same output as `orchclaude history -n 50`
+   - Arrow keys to select, [Enter] to view log for that run (if log file still exists),
+     [Esc] to go back
+
+4. **Live log view** (right pane, auto-updates)
+   - Color coding: PROGRESS lines green, QA_FINDING yellow, errors red, banners cyan
+   - Auto-scroll on new output (toggle with S)
+   - Shows last 500 lines maximum
+
+**Child process management:**
+- Each "New Run" spawns a child process: `powershell.exe -ExecutionPolicy Bypass -File orchclaude.ps1 run ...`
+- stdout and stderr are piped into the TUI output pane in real time
+- Session state: STARTING → RUNNING → COMPLETE / TIMEOUT / PAUSED
+- If user hits F10 (kill): sends SIGTERM to the child process
+- If child exits cleanly (code 0): marks session COMPLETE
+- If child exits with code 1: marks session FAILED or TIMEOUT (read session JSON)
+- Sessions persist in the TUI until the TUI is closed
+
+**Desktop shortcut (Windows):**
+- A `.lnk` file at `%USERPROFILE%\Desktop\orchclaude.lnk`
+- Target: `powershell.exe -ExecutionPolicy Bypass -NoExit -Command "node '<install-path>\tui\orchclaude-tui.js'"`
+- Or if npm global: target is `cmd.exe /c orchclaude ui`
+- Icon: use the PowerShell icon or a terminal icon from system32
+- Created by a PowerShell script `scripts/create-shortcut.ps1` that is run once during setup
+
+**Files to create:**
+- `tui/orchclaude-tui.js` — main TUI entry point
+- `tui/package.json` — declares `blessed` dependency
+- `scripts/create-shortcut.ps1` — creates the desktop shortcut
+- Add `"ui"` subcommand to `orchclaude.ps1` that runs `node tui/orchclaude-tui.js`
+- Update `package.json` to include `tui/` in the `files` array
+
+**Implementation notes:**
+- Use `blessed` (npm: `blessed`) for the terminal UI widgets. It works on Windows via
+  `windows-ansi`. Install: `npm install blessed` in the `tui/` subfolder.
+- Use Node.js `child_process.spawn` to run orchclaude as a subprocess.
+- Parse PROGRESS: lines from child output to update the status bar in real time.
+- The TUI should work even if there is no active session — show history and allow new runs.
+- Do NOT use Electron. Pure terminal only.
+- On startup, read `~/.orchclaude/history.json` to populate the session list with recent past runs.
+
+**Acceptance Criteria:**
+- `orchclaude ui` launches the TUI without error
+- Pressing N opens the new run form with all fields
+- Filling in the form and pressing Enter starts a real orchclaude run as a child process
+- Live output appears in the right pane within 2 seconds of each line being written
+- PROGRESS lines are colored green, errors red
+- Pressing H shows the history table
+- Pressing Q exits the TUI cleanly (child processes are killed first)
+- Desktop shortcut `orchclaude.lnk` is created on the desktop by `scripts/create-shortcut.ps1`
+- Double-clicking the shortcut opens the TUI in a new terminal window
+- `scripts/create-shortcut.ps1` is documented in README.md
+
+---

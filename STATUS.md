@@ -8,8 +8,8 @@ It is the first thing any new session should read before touching any code.
 ## Current State
 
 **Version:** 0.1.0
-**Phase:** 9 — Reliability & Bug Fixes
-**Next item to implement:** 9.2 — Fix Write-Session missing flags on resume
+**Phase:** 10 — Terminal GUI (TUI)
+**Next item to implement:** 10.1 — orchclaude TUI (`orchclaude ui`) and desktop shortcut
 **Last session date:** 2026-04-21
 **Windows stable:** yes
 **Cross-platform:** no
@@ -112,6 +112,12 @@ It is the first thing any new session should read before touching any code.
 - [x] 9.1 — Fix classifier missing --dangerously-skip-permissions
 - [ ] 9.2 — Fix Write-Session missing flags on resume
 - [ ] 9.3 — Fix modelprofile evaluated before profile loading
+
+---
+
+## Phase 10 Checklist — Terminal GUI (TUI)
+
+- [ ] 10.1 — orchclaude TUI (`orchclaude ui`) and desktop shortcut
 
 ---
 
